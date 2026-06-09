@@ -1,24 +1,24 @@
-# Experiment Notes
+# 실험 기록
 
-## Image generation
+## 이미지 생성
 
-- Started with `diffusers` and Stable Diffusion v1.5 for local text-to-image generation.
-- Tested anime/illustration-oriented models such as Anything V5 and Ghibli-style LoRA/model variants.
-- Tried prompt and negative-prompt tuning for cat and character images, including seed-based retries.
-- Added one-off generation and upscaling helpers after repeated manual runs.
+- `diffusers`와 Stable Diffusion v1.5를 기반으로 로컬 text-to-image 생성을 시작했습니다.
+- Anything V5, Ghibli 계열 LoRA/모델처럼 애니메이션·일러스트 스타일에 가까운 모델을 테스트했습니다.
+- 고양이, 캐릭터 이미지 생성을 위해 positive prompt, negative prompt, seed를 바꿔가며 반복 실험했습니다.
+- 반복 실행이 많아지면서 단발 생성용 스크립트와 업스케일 보조 스크립트를 추가했습니다.
 
-## Video generation
+## 비디오 생성
 
-- Tried a simple image-sequence approach: generate a keyframe, then create nearby frames with img2img and assemble them with ffmpeg.
-- This preserved visual continuity better than fresh text-to-image frames, but it did not create real semantic motion. Walking prompts mostly became static or warped frames.
-- Tested AnimateDiff to get actual frame-to-frame motion from a motion adapter.
-- On a 16 GB Apple Silicon machine, practical settings had to be reduced to fewer frames and lower resolution. This improved memory use but reduced quality and subject consistency.
-- Tested Zeroscope and LTX-style scripts as alternative text-to-video paths.
+- 먼저 키프레임 이미지를 만든 뒤 `img2img`로 비슷한 프레임을 여러 장 생성하고, `ffmpeg`로 이어 붙이는 방식을 시도했습니다.
+- 이 방식은 매 프레임을 새로 생성하는 것보다 시각적 연속성은 나았지만, 실제 의미 있는 동작을 만들지는 못했습니다. 걷기 같은 프롬프트는 정적인 이미지가 흔들리거나 왜곡되는 결과가 많았습니다.
+- 실제 프레임 간 모션을 만들기 위해 AnimateDiff와 motion adapter를 테스트했습니다.
+- 16GB Apple Silicon 환경에서는 프레임 수와 해상도를 낮춰야 실행 가능했습니다. 메모리 사용은 줄었지만 품질과 피사체 일관성은 크게 떨어졌습니다.
+- 대안적인 text-to-video 경로로 Zeroscope와 LTX 계열 스크립트도 테스트했습니다.
 
-## Main takeaways
+## 정리
 
-- Local image generation was usable for iteration and prompt experiments.
-- Local video generation was much more constrained: memory pressure, low resolution, and weak subject consistency were recurring issues.
-- img2img frame interpolation is useful for small camera-like changes, not for convincing action.
-- Motion-adapter pipelines can create real motion, but quality depends heavily on VRAM/RAM, resolution, frame count, and the base model.
-- For production-quality video, hosted services or larger GPU setups are more realistic than this local setup.
+- 로컬 이미지 생성은 프롬프트 실험과 반복 작업에 충분히 사용할 만했습니다.
+- 로컬 비디오 생성은 훨씬 제약이 컸습니다. 메모리 부족, 낮은 해상도, 약한 피사체 일관성이 반복적인 문제였습니다.
+- `img2img` 프레임 연결은 작은 카메라 움직임처럼 보이는 변화에는 쓸 수 있지만, 설득력 있는 실제 동작을 만들기에는 한계가 있습니다.
+- motion adapter 기반 파이프라인은 실제 움직임을 만들 수 있지만, 결과 품질은 RAM/VRAM, 해상도, 프레임 수, base model에 크게 좌우됩니다.
+- 제품 수준의 비디오 품질을 기대한다면 이 로컬 환경보다는 hosted service나 더 큰 GPU 환경이 현실적입니다.

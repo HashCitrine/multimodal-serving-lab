@@ -1,0 +1,29 @@
+animatediff:
+  base_model: "runwayml/stable-diffusion-v1-5"
+  base_model_cache: "../sd-gen/models"
+  motion_adapter: "guoyww/animatediff-motion-adapter-v1-5-3"
+  motion_adapter_cache: "./models"
+  num_frames: 80
+  fps: 8
+  width: 512
+  height: 512
+  steps: 25
+  guidance_scale: 7.5
+
+zeroscope:
+  model_id: "cerspense/zeroscope_v2_576w"
+  cache_dir: "./models"
+  num_frames: 24
+  fps: 8
+  width: 576
+  height: 320
+  steps: 25
+  guidance_scale: 9.0
+
+device:
+  type: "auto"  # auto | mps | cpu
+  fp16: false   # MPS에서 false 필수
+
+output:
+  dir: "./outputs"
+  format: "mp4"

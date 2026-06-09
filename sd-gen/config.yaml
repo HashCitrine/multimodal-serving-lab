@@ -1,0 +1,34 @@
+# Stable Diffusion 이미지 생성 설정
+
+model:
+  # 사용할 모델 ID (HuggingFace Hub 또는 로컬 경로)
+  # 옵션:
+  #   runwayml/stable-diffusion-v1-5
+  #   stabilityai/stable-diffusion-2-1
+  #   stabilityai/stable-diffusion-xl-base-1.0  (SDXL, 고품질)
+  #   ./models/my-custom-model                  (로컬)
+  id: "runwayml/stable-diffusion-v1-5"
+  cache_dir: "./models"
+
+generation:
+  # 기본 프롬프트 (CLI에서 -p 로 덮어쓰기 가능)
+  prompt: "a beautiful mountain landscape at sunset, cinematic lighting, 8k"
+  negative_prompt: "blurry, low quality, bad anatomy, ugly, watermark"
+  width: 512
+  height: 512
+  steps: 30          # 추론 스텝 (20~50 권장)
+  guidance_scale: 7.5  # CFG scale (프롬프트 충실도, 보통 6~12)
+  num_images: 1        # 한 번에 생성할 이미지 수
+  seed: -1             # -1 = 랜덤, 정수 지정 시 고정 시드
+
+output:
+  dir: "./outputs"
+  format: "png"        # png | jpg
+  filename_prefix: "sd"
+  save_metadata: true  # 프롬프트/시드 정보를 PNG 메타데이터에 저장
+
+device:
+  # auto: CUDA → MPS(Apple Silicon) → CPU 순으로 자동 선택
+  # 강제 지정: cuda | mps | cpu
+  type: "auto"
+  fp16: false          # MPS에서 float16 사용 시 black image 버그 있음 → false 권장 (CUDA에서는 true 가능)

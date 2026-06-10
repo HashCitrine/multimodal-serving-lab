@@ -1,0 +1,18 @@
+# Piper TTS 설정
+
+voice:
+  name: "en_US-lessac-medium"   # piper.download_voices 의 보이스 이름
+  model_dir: "./models"
+
+synthesis:
+  text: "Hello, this is a local Piper text to speech experiment on Apple Silicon."
+  length_scale: 1.0     # 발화 속도 (>1 느리게, <1 빠르게)
+  noise_scale: 0.667    # 음향 다양성
+  noise_w_scale: 0.8    # 발음 길이 다양성
+
+output:
+  dir: "./outputs"
+  filename_prefix: "tts"
+
+device:
+  use_cuda: false       # onnxruntime CUDA EP (NVIDIA GPU에서 onnxruntime-gpu 설치 시 true)

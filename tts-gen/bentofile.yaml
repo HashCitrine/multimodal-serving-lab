@@ -1,0 +1,12 @@
+# BentoML 빌드 정의 — `bentoml build` 후 `bentoml containerize` 로 Docker 이미지 생성
+service: "bento_service:PiperTTS"
+name: "piper-tts"
+labels:
+  owner: vision-ai-experiments
+  modality: tts
+include:
+  - "bento_service.py"
+  - "models/*.onnx"
+  - "models/*.onnx.json"
+python:
+  requirements_txt: "./requirements.txt"

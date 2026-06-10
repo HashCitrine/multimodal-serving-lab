@@ -1,0 +1,16 @@
+# 서빙 레이어 설정
+
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+scheduler:
+  max_batch_size: 8     # 한 배치 최대 요청 수
+  max_wait_ms: 10       # 첫 요청 후 배치를 모으는 최대 대기(ms)
+  workers: 1            # 어댑터 추론용 스레드 수 (모델이 GIL 밖 연산이면 늘릴 가치 있음)
+
+adapter:
+  name: "echo"          # adapters/__init__.py REGISTRY 의 키
+  # echo 어댑터 파라미터(모델 지연 흉내)
+  latency_ms: 50        # 배치 1회당 고정 지연
+  per_item_ms: 0        # 배치 항목당 추가 지연

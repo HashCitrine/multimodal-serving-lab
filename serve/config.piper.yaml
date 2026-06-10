@@ -1,0 +1,17 @@
+# 직접 구현 baseline 서버로 Piper TTS 를 서빙하는 설정
+# 실행: SERVE_CONFIG=config.piper.yaml python server.py
+# (tts-gen 의 BentoML 서빙과 같은 모델을 같은 bench.py 로 비교)
+
+server:
+  host: "127.0.0.1"
+  port: 8001
+
+scheduler:
+  max_batch_size: 8
+  max_wait_ms: 10
+  workers: 1            # Piper는 GIL을 잡는 구간이 있어 worker를 늘려도 한계가 있음
+
+adapter:
+  name: "piper-tts"
+  voice: "en_US-lessac-medium"
+  length_scale: 1.0

@@ -27,7 +27,24 @@ outputs/
 *.mov
 *.webm
 
+# Audio (TTS/STT outputs & samples)
+*.wav
+*.flac
+*.mp3
+*.ogg
+
+# Motion / avatar artifacts (landmarks, blendshapes, motion data)
+*.npz
+*.npy
+*.bvh
+*.pkl
+
+# Quantized model weights (GGUF/CTranslate2 etc.)
+*.gguf
+*.ct2
+
 # Local/system files
 .DS_Store
 .env
 *.log
+.idea/

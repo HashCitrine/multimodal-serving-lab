@@ -1,0 +1,21 @@
+# LLM 서빙 설정 — 로컬(Ollama) ↔ 클라우드(vLLM) 는 provider.base_url 만 바꾸면 전환
+# (둘 다 OpenAI 호환 API)
+
+provider:
+  base_url: "http://localhost:11434/v1"     # 로컬 Ollama
+  api_key: "ollama"
+  model: "llama3.2:1b-instruct-q4_K_M"
+
+# 추후 클라우드 예시 (vLLM) — 이 블록으로 바꾸기만 하면 됨:
+#   base_url: "http://<vllm-host>:8000/v1"
+#   api_key: "EMPTY"
+#   model: "meta-llama/Llama-3.2-1B-Instruct"
+
+# 양자화 스윕 대상 (Ollama 태그) — quant_sweep.py
+quant_tags:
+  - "llama3.2:1b-instruct-q4_K_M"
+  - "llama3.2:1b-instruct-q8_0"
+  - "llama3.2:1b-instruct-fp16"
+
+# 정밀 timing/메모리 측정용 Ollama 네이티브 API
+ollama_base: "http://localhost:11434"

@@ -1,0 +1,7 @@
+# LLM 서빙·최적화 실험 (로컬: Ollama, 클라우드 전환: vLLM — 둘 다 OpenAI 호환)
+openai>=1.30      # OpenAI 호환 클라이언트 (provider 무관)
+httpx>=0.27       # Ollama 네이티브 API(정밀 timing/메모리)
+PyYAML>=6.0
+
+# 로컬 백엔드는 Ollama 데몬(별도 설치, `ollama serve`)을 사용한다.
+# 클라우드는 vLLM 서버(OpenAI 호환)로 base_url 만 교체.

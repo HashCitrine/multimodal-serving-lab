@@ -1,0 +1,17 @@
+# 음성 에이전트 설정 (STT → LLM → TTS)
+
+stt:                                     # stt-gen (faster-whisper)
+  model: "base.en"
+  compute_type: "int8"
+  device: "auto"                         # auto(cuda면 cuda) | cpu | cuda
+
+llm:                                     # llm-serve provider (OpenAI 호환)
+  base_url: "http://localhost:11434/v1"  # 로컬 Ollama / 클라우드면 vLLM base_url
+  api_key: "ollama"
+  model: "llama3.2:1b-instruct-q4_K_M"
+  system: "You are a concise, friendly English tutor. Answer in 1-2 short sentences."
+  max_tokens: 80
+
+tts:                                     # tts-gen (Piper)
+  voice_dir: "../tts-gen/models"
+  voice: "en_US-lessac-medium"

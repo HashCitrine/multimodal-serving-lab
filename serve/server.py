@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
         print("[serve] stopped")
 
 
-app = FastAPI(title="vision-ai-experiments serving spine", lifespan=lifespan)
+app = FastAPI(title="multimodal-serving-lab serving spine", lifespan=lifespan)
 
 
 class InferRequest(BaseModel):

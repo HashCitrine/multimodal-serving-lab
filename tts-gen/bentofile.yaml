@@ -2,7 +2,7 @@
 service: "bento_service:PiperTTS"
 name: "piper-tts"
 labels:
-  owner: vision-ai-experiments
+  owner: multimodal-serving-lab
   modality: tts
 include:
   - "bento_service.py"

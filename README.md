@@ -1,4 +1,4 @@
-# vision-ai-experiments
+# multimodal-serving-lab
 
 생성·멀티모달 AI 모델을 로컬 환경에서 직접 실행·서빙·최적화해 본 기록을 정리한 저장소입니다.
 

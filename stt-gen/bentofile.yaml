@@ -2,7 +2,7 @@
 service: "bento_service:WhisperSTT"
 name: "whisper-stt"
 labels:
-  owner: vision-ai-experiments
+  owner: multimodal-serving-lab
   modality: stt
 include:
   - "bento_service.py"

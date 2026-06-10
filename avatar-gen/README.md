@@ -43,7 +43,7 @@ cd <external-wav2lip-dir>
 python inference.py --checkpoint_path checkpoints/wav2lip_gan.pth \
     --face <실제얼굴.jpg> --audio <speech.wav> --outfile result.mp4
 # 2) avatar-gen 파이프라인으로 통합 실행 (config 의 wav2lip_dir/ckpt 주석 해제 후)
-cd vision-ai-experiments/avatar-gen
+cd multimodal-serving-lab/avatar-gen
 python pipeline.py --text "Hello, I am your tutor." --face <실제얼굴.jpg> --backend wav2lip
 ```
 - **MPS 가속**: `inference.py` 148행 `device = 'cuda' if torch.cuda.is_available() else 'cpu'` 을

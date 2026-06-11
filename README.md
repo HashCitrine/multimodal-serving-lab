@@ -11,13 +11,13 @@
 - `serve/`: **서빙 내부 원리 학습용 baseline + 벤치마크 하니스** — 직접 구현한 큐·동적 배칭·메트릭(프레임워크 비교 기준선). 실제 서빙은 BentoML/Triton/vLLM 사용
 - `sd-gen/`: Stable Diffusion 기반 이미지 생성, ComfyUI 연동, 단발 생성, 업스케일
 - `video-gen/`: AnimateDiff, Zeroscope, LTX 계열 비디오 생성
-- `tts-gen/`: 음성 합성(Piper) 서빙·최적화 — BentoML 패키징, RTF·동시성 벤치 (Phase 1 완료)
-- `stt-gen/`: 음성 인식(faster-whisper) 서빙·최적화 — int8 양자화 RTF/WER/메모리, TTS↔STT 왕복 (Phase 2 완료)
-- `llm-serve/`: LLM 서빙·양자화 최적화 — 로컬 Ollama(OpenAI 호환)↔클라우드 vLLM 전환 구조, 양자화/배칭 벤치 (Phase 3 완료)
+- `tts-gen/`: 음성 합성(Piper) 서빙·최적화 — BentoML 패키징, RTF·동시성 벤치
+- `stt-gen/`: 음성 인식(faster-whisper) 서빙·최적화 — int8 양자화 RTF/WER/메모리, TTS↔STT 왕복
+- `llm-serve/`: LLM 서빙·양자화 최적화 — 로컬 Ollama(OpenAI 호환)↔클라우드 vLLM 전환 구조, 양자화/배칭 벤치
 - `voice-agent/`: STT→LLM→TTS 음성 에이전트 — 대화 턴 end-to-end 지연 예산 측정(병목: warm=STT, cold=LLM)
-- `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형 (Phase 4)
+- `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형
 - `docs/project-flow-and-terms.md`: 흐름·용어·실험 기록 문서 안내
-- `docs/project-flow.md`: 전체 Phase 흐름·서브 프로젝트별 로직 해설
+- `docs/project-flow.md`: 전체 실험 흐름·서브 프로젝트별 로직 해설
 - `docs/glossary.md`: 멀티모달·서빙·최적화 핵심 용어 사전
 - `docs/experiments.md`: 시도한 내용·결과·한계, 벤치 수치 기록
 

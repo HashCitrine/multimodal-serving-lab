@@ -41,9 +41,9 @@ curl -s -X POST localhost:3000/transcribe -F 'audio=@clip.wav'
 
 - **int8의 이득은 속도가 아니라 메모리** (~50% 감소, medium 4.6GB→2.1GB). CPU에선 int8이 오히려
   약간 느림(양자화/역양자화 오버헤드, float32 GEMM이 이미 잘 최적화됨). **WER는 동일(정확도 손실 없음)**.
-- 의미: 메모리 반감 → **GPU당 더 많은 replica/더 큰 모델을 적재**(Phase 1의 '복제' 처리량 레버와 직결).
+- 의미: 메모리 반감 → **GPU당 더 많은 replica/더 큰 모델을 적재**(TTS 실험의 '복제' 처리량 레버와 직결).
   속도 이득의 int8은 보통 **GPU(int8 텐서코어)**에서 나타남 → 클라우드 단계에서 확인 예정.
-- Phase 1(TTS)의 '복제' 레버와 묶으면: *"각 최적화는 도움 되는 축이 다르다(throughput vs memory),
+- TTS 실험(TTS)의 '복제' 레버와 묶으면: *"각 최적화는 도움 되는 축이 다르다(throughput vs memory),
   가정 말고 측정한다"* 는 서빙 판단으로 이어짐.
 
 ## 다음(선택)

@@ -2,7 +2,7 @@
 """LLM 서빙 동시성 벤치 (OpenAI 호환 — provider 무관, 클라우드 포팅 가능).
 
 동시성을 높이며 **집계 처리량(aggregate decode tok/s)**·TTFT·요청별 tok/s 를 잰다.
-LLM은 배치 forward(연속 배칭)가 되므로 — Phase1(TTS 배칭 0×)·Phase2(STT int8 속도 0×)와 달리 —
+LLM은 배치 forward(연속 배칭)가 되므로 — TTS 실험(TTS 배칭 0×)·STT 실험(STT int8 속도 0×)와 달리 —
 동시성이 올라갈수록 집계 처리량이 오를 것으로 기대. 같은 스크립트를 vLLM endpoint(base_url)로만
 바꿔 클라우드에서 재실행할 수 있다.
 

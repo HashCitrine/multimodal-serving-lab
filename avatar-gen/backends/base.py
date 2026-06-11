@@ -21,3 +21,7 @@ class LipSyncBackend(abc.ABC):
     def available(self) -> bool:
         """이 백엔드를 현재 환경에서 실행할 수 있는지(의존성/체크포인트 점검)."""
         return True
+
+    def diagnostics(self) -> list[str]:
+        """사용 불가할 때 사람이 바로 고칠 수 있는 점검 메시지."""
+        return []

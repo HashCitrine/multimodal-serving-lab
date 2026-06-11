@@ -1,68 +1,72 @@
-# avatar-gen — 토킹헤드/립싱크 아바타 파이프라인 (Phase 4, 사전 스캐폴드)
+# avatar-gen — 토킹헤드/립싱크 아바타 파이프라인
 
-`text →(LLM)→ TTS →(lip-sync)→ mp4` 를 한 파이프라인으로 묶는다. 앞 Phase 자산을 재사용:
-LLM(llm-serve provider), TTS(tts-gen Piper), 립싱크(교체형 backend). **device 자동 감지(cuda→mps→cpu).**
+`text →(LLM)→ TTS →(lip-sync)→ mp4` 를 한 파이프라인으로 묶는다. LLM은 OpenAI 호환 provider, TTS는 Piper, 립싱크는 교체형 backend를 사용한다. `backend=static`은 정지 영상 폴백이고, `backend=wav2lip`은 외부 Wav2Lip repo/checkpoint를 호출한다.
 
-## 지금 바로 되는 것 / 나중에 붙이는 것
-- ✅ **지금**: `backend=static`(ffmpeg)으로 text→LLM→TTS→영상 **전 구간이 동작**(검증됨). 입모양은 정지.
-- 🔌 **나중**: `backend=wav2lip` 등 실제 립싱크 모델을 외부 설치 후 config만 바꾸면 입모양까지. (모델은 무거워
-  레포에 포함하지 않음 — 경로만 주입.)
+모델 파일, 얼굴 입력, 오디오, 생성 mp4는 저장소에 포함하지 않는다. Wav2Lip 오픈소스 모델은 연구/개인 실험 용도로만 다룬다.
+
+## 빠른 시작
 
 ```bash
 pip install -r requirements.txt          # + 시스템 ffmpeg
-python pipeline.py --prompt "Greet a learner in one sentence." --backend static
-python pipeline.py --text "Hello!" --face me.jpg --backend wav2lip   # 모델 준비 후
+python pipeline.py --text "Hello, I am your tutor." --backend static
 ```
 
-## "Mac이라 안 되는 것" 아님 — NVIDIA를 흔히 쓰는 진짜 이유
-SadTalker/Wav2Lip 류가 NVIDIA에서 많이 도는 건 **성능이 아니라 생태계(CUDA) 때문**이다:
-- 오래된 코드(2020~2023)라 특정 torch/CUDA 버전·커스텀 CUDA 커널·`insightface`/`gfpgan` 등이 **CUDA 가정**
-- 스크립트가 `--device cuda` 하드코딩, MPS 분기 미고려
+실제 립싱크는 외부 Wav2Lip 환경을 준비한 뒤 실행한다.
 
-즉 **M5 Max 성능이 부족한 게 아니라, 레포가 Apple Silicon을 1급 지원하지 않아 손이 더 간다.** 성능만 보면 충분.
-
-### 환경별 현실
-| 백엔드 | Mac(MPS) | NVIDIA | 비고 |
-|--|--|--|--|
-| static(ffmpeg) | ✅ | ✅ | 립싱크 아님(파이프라인 검증/폴백) |
-| Wav2Lip | △ 가능(의존성·device 패치) | ✅ 그대로 | 순수 PyTorch라 MPS 시도 가치 큼 |
-| SadTalker | △ 까다로움(gfpgan/face-align 패치) | ✅ | 의존성 무거움 |
-| MuseTalk / LatentSync | △~✕ | ✅ | 최신·무거움, GPU 권장 |
-
-### 준비 절차 (Wav2Lip) — 외부 레포 경로 주입
-Wav2Lip을 사용하려면 외부 레포와 체크포인트를 별도로 준비한 뒤 `config.yaml`에 경로를 주입한다.
-- 레포: `<external-wav2lip-dir>` (justinjohn0306 포크, RetinaFace 얼굴검출)
-- 체크포인트: `checkpoints/wav2lip_gan.pth`(436MB), `checkpoints/mobilenet.pth`(RetinaFace)
-- 의존성: librosa·opencv·numba·tqdm·batch-face·torchvision
-- torch 2.5.1 (weights_only 이슈 없음), MPS 사용 가능
-
-**실행 예시**
 ```bash
-# 1) 직접 검증 (CPU. 5초 음성 기준 1~3분)
-cd <external-wav2lip-dir>
-python inference.py --checkpoint_path checkpoints/wav2lip_gan.pth \
-    --face <실제얼굴.jpg> --audio <speech.wav> --outfile result.mp4
-# 2) avatar-gen 파이프라인으로 통합 실행 (config 의 wav2lip_dir/ckpt 주석 해제 후)
-cd multimodal-serving-lab/avatar-gen
-python pipeline.py --text "Hello, I am your tutor." --face <실제얼굴.jpg> --backend wav2lip
+export WAV2LIP_DIR=/path/to/Wav2Lip
+export WAV2LIP_CKPT=/path/to/Wav2Lip/checkpoints/wav2lip_gan.pth
+python pipeline.py --text "Hello, I am your tutor." --face /path/to/face.jpg --backend wav2lip --device cuda
 ```
-- **MPS 가속**: `inference.py` 148행 `device = 'cuda' if torch.cuda.is_available() else 'cpu'` 을
-  `... else ('mps' if torch.backends.mps.is_available() else 'cpu')` 로 패치. (일부 op가 MPS 미지원이면
-  CPU 폴백 — 그땐 CPU로 충분히 동작.)
-- **주의**: RetinaFace 는 **실제 얼굴 사진**에서만 검출됨(그림/placeholder 불가). 정면 얼굴 권장.
 
-## 솔직한 위치 설정
-이 단계는 **최적화 경험이 아니라 '무거운 모델을 환경에 맞춰 돌리는 통합/트러블슈팅' 경험**이다(특히
-레거시 모델의 MPS 포팅). Phase 1~3의 서빙·최적화 서사와는 결이 다르며, 모션 모달리티 커버리지를 위한 것.
+## Wav2Lip 준비
+
+Wav2Lip 본체와 weights는 별도 설치한다. 공개 repo에는 경로만 주입한다.
+
+- repo: `Rudrabha/Wav2Lip` 또는 Python 3.10 대응 fork
+- main checkpoint: `wav2lip_gan.pth` 또는 `wav2lip.pth`
+- face detector weight: `face_detection/detection/sfd/s3fd.pth`
+- 시스템 dependency: `ffmpeg`
+- CUDA 환경: PyTorch CUDA wheel + Wav2Lip requirements
+
+원본 inference 형식은 다음과 같다.
+
+```bash
+cd /path/to/Wav2Lip
+python inference.py \
+  --checkpoint_path checkpoints/wav2lip_gan.pth \
+  --face /path/to/face.jpg \
+  --audio /path/to/speech.wav \
+  --outfile result.mp4
+```
+
+`config.yaml`의 `pads`, `resize_factor`, `nosmooth`, `fps`, `gpu_id`를 통해 inference 옵션을 넘길 수 있다. 입 위치가 어긋나면 `pads`와 `nosmooth`를 먼저 조정한다.
+
+## 벤치
+
+`bench_avatar.py`는 같은 입력으로 audio length, TTS latency, lip-sync latency, lip-sync RTF, end-to-end latency, NVIDIA GPU peak memory를 측정한다.
+
+```bash
+python bench_avatar.py --backend static --runs 3
+python bench_avatar.py --backend wav2lip --face /path/to/face.jpg --device cuda --runs 3 --gpu-id 0
+```
+
+결과 mp4/wav는 `outputs/`에 생성되며 Git에 포함하지 않는다.
 
 ## 구성
-```
+
+```text
 avatar-gen/
-├── pipeline.py        # text→LLM→TTS→lipsync, device 자동감지
-├── config.yaml        # llm/tts/lipsync(backend) 설정
+├── pipeline.py        # text→LLM→TTS→lipsync, 단계별 latency 출력
+├── bench_avatar.py    # static/Wav2Lip backend latency·RTF·GPU memory 벤치
+├── config.yaml        # llm/tts/lipsync backend 설정
 ├── requirements.txt
 └── backends/
     ├── base.py        # LipSyncBackend 인터페이스
-    ├── static.py      # ffmpeg 정지영상(지금 동작)
-    └── wav2lip.py     # 외부 Wav2Lip 셸아웃(준비되면 동작)
+    ├── static.py      # ffmpeg 정지영상 폴백
+    └── wav2lip.py     # 외부 Wav2Lip 셸아웃
 ```
+
+## 위치 설정
+
+이 실험의 목표는 제품 품질 아바타가 아니라, 음성 합성과 얼굴 입력을 실제 lip-sync 모델까지 연결하고 병목을 측정하는 것이다. Mac/MPS에서 막히던 레거시 의존성 문제는 CUDA 환경에서 우회할 수 있으므로, RTX 계열 GPU에서는 Wav2Lip 실행과 RTF 측정에 집중한다.

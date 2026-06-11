@@ -1,6 +1,6 @@
 # 프로젝트 흐름
 
-`multimodal-serving-lab`의 Phase 구성, 서브 프로젝트별 로직 흐름, 실험 판단 기준을 정리한다.
+`multimodal-serving-lab`의 실험 구성, 서브 프로젝트별 로직 흐름, 실험 판단 기준을 정리한다.
 용어 설명은 [`glossary.md`](glossary.md), 실제 수치는 [`experiments.md`](experiments.md)를 참고한다.
 
 ## 1. 프로젝트 개요
@@ -13,7 +13,7 @@
 | 산출물 | 실행 스크립트, BentoML 서비스, 직접 구현 serving baseline, 벤치 결과, 통합 파이프라인 |
 | 제외 | 모델 파일, 생성 결과물, 완성형 제품 UI |
 
-## 2. 전체 Phase
+## 2. 전체 실험 흐름
 
 | 순서 | 디렉터리 | 모달리티 | 핵심 역할 | 다음 단계로 이어지는 자산 |
 |---:|---|---|---|---|

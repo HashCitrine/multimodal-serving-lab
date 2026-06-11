@@ -1,7 +1,7 @@
 # serve — 서빙 내부 원리 학습용 baseline + 벤치마크 하니스
 
 > **포지셔닝(중요)**: 이건 프로덕션 서빙 스택이 **아닙니다**. 실제 모델 서빙은
-> **BentoML / Triton / vLLM** 같은 프레임워크로 합니다(루트 README·로드맵 참고).
+> **BentoML / Triton / vLLM** 같은 프레임워크로 합니다(루트 README 참고).
 > 이 폴더는 dynamic batching·큐·지연/처리량 트레이드오프 같은 **서빙 런타임의 내부
 > 동작을 직접 구현해 계측·이해**하기 위한 학습용 baseline입니다. 프레임워크의 배칭
 > 설정(예: Triton `dynamic_batching`, vLLM continuous batching)을 *제대로 쓰기 위한*

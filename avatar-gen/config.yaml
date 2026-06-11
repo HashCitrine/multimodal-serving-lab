@@ -9,12 +9,20 @@ llm:                                        # llm-serve 와 동일한 OpenAI 호
 tts:                                        # tts-gen 보이스 재사용
   voice_dir: "../tts-gen/models"
   voice: "en_US-lessac-medium"
+  use_cuda: false                           # lip-sync CUDA와 분리. onnxruntime-gpu 준비 시에만 true
 
 lipsync:
-  backend: "static"      # static(ffmpeg, 어디서나) | wav2lip(외부 모델)
+  backend: "static"      # static(ffmpeg) | wav2lip(외부 모델)
   ffmpeg: "ffmpeg"
-  # wav2lip 사용 시 아래 주석 해제(이미 _external/Wav2Lip 에 클론·체크포인트 준비됨):
-  #   백엔드는 WAV2LIP_DIR / WAV2LIP_CKPT 환경변수도 인식하므로 그걸 써도 됨.
+  device: "auto"         # auto(cuda→mps→cpu) | cuda | mps | cpu
+
+  # Wav2Lip 사용 시 아래 경로를 주입한다. 환경변수 WAV2LIP_DIR / WAV2LIP_CKPT도 인식한다.
   # wav2lip_dir: "../../_external/Wav2Lip"
   # wav2lip_ckpt: "../../_external/Wav2Lip/checkpoints/wav2lip_gan.pth"
-  device: "auto"         # auto(cuda→mps→cpu) | cuda | mps | cpu
+
+  # Wav2Lip inference 옵션. 얼굴 crop이 어긋나면 pads/nosmooth를 먼저 조정한다.
+  pads: [0, 20, 0, 0]
+  resize_factor: 1
+  nosmooth: false
+  # fps: 25
+  # gpu_id: 0

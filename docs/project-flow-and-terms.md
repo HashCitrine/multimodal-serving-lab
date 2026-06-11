@@ -5,7 +5,7 @@
 
 | 문서 | 목적 | 먼저 읽을 상황 |
 |---|---|---|
-| [`project-flow.md`](project-flow.md) | 전체 Phase, 서브 프로젝트별 로직 흐름, 실험 판단 기준 | 저장소 구조와 코드 흐름을 이해하고 싶을 때 |
+| [`project-flow.md`](project-flow.md) | 전체 실험 흐름, 서브 프로젝트별 로직 흐름, 실험 판단 기준 | 저장소 구조와 코드 흐름을 이해하고 싶을 때 |
 | [`glossary.md`](glossary.md) | 멀티모달/서빙/최적화 용어 사전 | RTF, TTFT, dynamic batching 같은 용어를 확인하고 싶을 때 |
 | [`experiments.md`](experiments.md) | 실제 실험 수치와 관찰 기록 | 결과 수치와 결론 근거를 확인하고 싶을 때 |
 

@@ -10,6 +10,9 @@ venv/
 .venv/
 env/
 
+# External model repos and local assets
+_external/
+
 # Model caches and generated outputs
 models/
 outputs/

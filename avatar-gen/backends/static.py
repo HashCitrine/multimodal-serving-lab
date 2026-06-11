@@ -23,6 +23,11 @@ class StaticBackend(LipSyncBackend):
     def available(self) -> bool:
         return shutil.which(self.ffmpeg) is not None or Path(self.ffmpeg).exists()
 
+    def diagnostics(self) -> list[str]:
+        if self.available():
+            return []
+        return [f"ffmpeg not found: {self.ffmpeg}"]
+
     def generate(self, face_path: str, audio_path: str, out_path: str) -> Path:
         # 정지 이미지를 오디오 길이만큼 반복해 영상화
         cmd = [

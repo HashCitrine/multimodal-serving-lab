@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """음성 에이전트: speech-in → STT → LLM → TTS → speech-out.
 
-앞 Phase 자산을 한 대화 턴으로 묶고, **단계별 지연 예산(latency budget)**을 측정한다 —
+앞선 서빙 실험 자산을 한 대화 턴으로 묶고, **단계별 지연 예산(latency budget)**을 측정한다 —
 대화형 음성 응답에서 어디가 병목인지(STT vs LLM prefill/decode vs TTS) 보는 새 최적화 축.
 
 마이크 없이 자체 검증: --ask "질문" 이면 Piper로 질문 음성을 합성해 입력으로 쓴다(전 구간 왕복).

@@ -17,5 +17,10 @@ def build_backend(cfg: Dict[str, Any]) -> LipSyncBackend:
             repo_dir=cfg.get("wav2lip_dir", ""),
             checkpoint=cfg.get("wav2lip_ckpt", ""),
             device=cfg.get("device", "auto"),
+            pads=cfg.get("pads"),
+            resize_factor=cfg.get("resize_factor"),
+            nosmooth=bool(cfg.get("nosmooth", False)),
+            fps=cfg.get("fps"),
+            gpu_id=cfg.get("gpu_id"),
         )
     raise ValueError(f"unknown lipsync backend '{name}' (static|wav2lip)")

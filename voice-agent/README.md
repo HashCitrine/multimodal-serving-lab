@@ -1,6 +1,6 @@
 # voice-agent — STT→LLM→TTS 음성 에이전트 (지연 예산 측정)
 
-앞 Phase의 세 서빙(STT·LLM·TTS)을 **한 대화 턴**으로 묶는다: speech-in → STT → LLM → TTS → speech-out.
+앞선 서빙 실험의 세 서빙(STT·LLM·TTS)을 **한 대화 턴**으로 묶는다: speech-in → STT → LLM → TTS → speech-out.
 대화형 음성 튜터/에이전트 맥락. 새 최적화 축 = **end-to-end 지연 예산(latency budget)**.
 
 마이크 없이도 검증: `--ask "질문"` 이면 Piper로 질문 음성을 합성해 입력으로 쓴다(전 구간 로컬 왕복).
@@ -16,7 +16,7 @@ voice-agent/
 
 ## 실행
 ```bash
-pip install -r requirements.txt           # + 앞 Phase 모델(Piper 보이스, Ollama LLM, whisper)
+pip install -r requirements.txt           # + 앞선 서빙 실험 모델(Piper 보이스, Ollama LLM, whisper)
 python agent.py --ask "How do you spell necessary?"
 python agent.py --audio question.wav
 python bench_latency.py

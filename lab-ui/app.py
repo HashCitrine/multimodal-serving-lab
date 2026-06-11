@@ -37,6 +37,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+import live_voice
+
 LAB_UI = Path(__file__).resolve().parent
 ROOT = LAB_UI.parent  # 저장소 루트 (multimodal-serving-lab)
 STATIC = LAB_UI / "static"
@@ -831,7 +833,7 @@ def preflight(target: str) -> dict:
             "name": "Ollama",
             "ok": o_ok,
             "hint": "" if o_ok else "Ollama 미기동 — `ollama serve` 후 모델을 pull 하세요 "
-                                    "(예: ollama pull llama3.2:1b-instruct-q4_K_M).",
+                                    "(예: ollama pull gemma4:12b-mlx).",
         })
 
     if target in ("avatar-gen", "video-gen"):
@@ -976,6 +978,7 @@ def serve_stop() -> dict:
 # FastAPI 앱
 # ---------------------------------------------------------------------------
 app = FastAPI(title="multimodal-serving-lab · lab-ui")
+app.include_router(live_voice.router)  # Live Voice 기능은 live_voice.py에 분리
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -76,6 +76,14 @@
   table.metric-table { width:100%; border-collapse:collapse; font-size:12px; }
   .metric-table th, .metric-table td { border-top:1px solid var(--line); padding:5px 6px; text-align:right; }
   .metric-table th:first-child, .metric-table td:first-child { text-align:left; }
+  .conv { display:flex; flex-direction:column; gap:8px; max-height:340px; overflow:auto; padding:4px; }
+  .turn { border:1px solid var(--line); border-radius:8px; padding:7px 10px; max-width:88%; }
+  .turn .who { font-size:11px; color:var(--mut); margin-bottom:2px; }
+  .turn.user { align-self:flex-end; background:#16202b; }
+  .turn.assistant { align-self:flex-start; background:#11141a; }
+  .turn .txt { font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .summary { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--mut); }
+  .summary b { color:var(--fg); font-weight:600; }
 </style>
 </head>
 <body>
@@ -608,6 +616,128 @@ function buildServeCard(card, t, statusEl, logEl, metricBox){
   refresh();
 }
 
+// Live Voice — target(subprocess) 패턴과 달리 동기 엔드포인트 + 대화 누적이라 수작업 카드.
+// 마이크 녹음/인코딩 유틸(startWavRecording/encodeWav/getAudioStream)을 그대로 재사용한다.
+async function buildLiveVoiceCard(){
+  const card = $('div','card');
+  const title = $('h2', null, ''); title.append($('span', null, 'Live Voice (대화)')); card.append(title);
+  card.append($('p','note','브라우저 마이크로 한 턴씩 말하면 STT→LLM→TTS로 응답합니다. 모델은 첫 턴에 로드 후 캐싱되어 이후 턴이 빨라집니다.'));
+
+  const micOk = hasMicrophoneApi();
+  if (!micOk) card.append($('p','hints', microphoneUnavailableMessage()));
+
+  // --- 설정(STT 모델/compute/device, Piper voice) ---
+  const settings = $('div','row');
+  const addSel = (name)=>{ const l=$('label','field'); l.append($('span','field-name',name)); const s=document.createElement('select'); l.append(s); settings.append(l); return s; };
+  const sttSel = addSel('STT 모델'), computeSel = addSel('compute_type'), deviceSel = addSel('device'), voiceSel = addSel('Piper voice');
+  card.append(settings);
+  const llmNote = $('p','muted',''); card.append(llmNote);
+
+  const fill = (sel, items, def)=>{ sel.innerHTML=''; (items||[]).forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; if(v===def) o.selected=true; sel.append(o); }); };
+  try {
+    const opt = await jget('/api/voice/live/options');
+    fill(sttSel, opt.stt_models, opt.stt_default);
+    fill(computeSel, opt.compute_types, opt.compute_default);
+    fill(deviceSel, opt.devices, opt.device_default);
+    fill(voiceSel, opt.voices && opt.voices.length ? opt.voices : [opt.voice_default], opt.voice_default);
+    llmNote.textContent = 'LLM: ' + (opt.llm_model || '(config.yaml)') + ' · 멀티턴 메모리 사용';
+  } catch(e){ llmNote.textContent = '옵션 로드 실패: ' + e.message; }
+
+  // --- 녹음/전송/초기화 ---
+  const ctrlRow = $('div','row');
+  const recBtn = $('button', null, '● 녹음');
+  const stopBtn = $('button','sec','■ 정지'); stopBtn.disabled = true;
+  const clearBtn = $('button','sec','대화 비우기');
+  if (!micOk){ recBtn.disabled = true; stopBtn.disabled = true; }
+  ctrlRow.append(recBtn, stopBtn, clearBtn); card.append(ctrlRow);
+
+  const previewRow = $('div','row');
+  const preview = document.createElement('audio'); preview.controls = true; preview.style.maxWidth='100%';
+  previewRow.append($('span','muted','최근 녹음:'), preview); card.append(previewRow);
+
+  const statusEl = $('div','status',''); card.append(statusEl);
+
+  // --- 대화 내역 / 응답 음성 / 지표 / 세션 요약 ---
+  const conv = $('div','conv'); card.append(conv);
+  const respWrap = $('div','section'); respWrap.append($('h3', null, '응답 음성'));
+  const respAudio = document.createElement('audio'); respAudio.controls = true; respAudio.style.width='100%';
+  respWrap.append(respAudio); card.append(respWrap);
+  const metricBox = $('div','metrics'); card.append(metricBox);
+  const summary = $('div','summary'); card.append(summary);
+
+  const sess = { turns:0, e2eSum:0, lastBottleneck:'-' };
+  const kv = (k,v)=>{ const s=$('span'); s.append(document.createTextNode(k+': ')); const b=document.createElement('b'); b.textContent=v; s.append(b); return s; };
+  function renderSummary(){
+    summary.innerHTML='';
+    const avg = sess.turns ? Math.round(sess.e2eSum/sess.turns)+' ms' : '-';
+    summary.append(kv('턴 수', sess.turns), kv('평균 E2E', avg), kv('최근 병목', sess.lastBottleneck));
+  }
+  renderSummary();
+  function addTurn(who, label, text){
+    const t = $('div','turn '+who);
+    t.append($('div','who', label), $('div','txt', text));
+    conv.append(t); conv.scrollTop = conv.scrollHeight;
+  }
+
+  let recording = null;
+  recBtn.onclick = async ()=>{
+    try {
+      recording = await startWavRecording();
+      preview.removeAttribute('src');
+      recBtn.disabled = true; stopBtn.disabled = false; clearBtn.disabled = true;
+      statusEl.textContent = '녹음 중…'; statusEl.className = 'status running';
+    } catch(e){ statusEl.textContent = '마이크 오류: ' + e.message; statusEl.className = 'status failed'; }
+  };
+  stopBtn.onclick = async ()=>{
+    stopBtn.disabled = true;
+    let blob;
+    try { blob = await recording.stop(); }
+    catch(e){ statusEl.textContent='녹음 중지 오류: '+e.message; statusEl.className='status failed'; recBtn.disabled=false; clearBtn.disabled=false; return; }
+    preview.src = URL.createObjectURL(blob);
+    statusEl.textContent = '전송·처리 중…'; statusEl.className = 'status running';
+    await sendTurn(blob);
+    recBtn.disabled = false; clearBtn.disabled = false;
+  };
+  clearBtn.onclick = async ()=>{
+    await jpost('/api/voice/live/reset');
+    conv.innerHTML=''; respAudio.removeAttribute('src'); renderMetrics(metricBox, {}, []);
+    sess.turns=0; sess.e2eSum=0; sess.lastBottleneck='-'; renderSummary();
+    statusEl.textContent='대화를 초기화했습니다.'; statusEl.className='status';
+  };
+
+  async function sendTurn(blob){
+    const fd = new FormData();
+    fd.append('audio', blob, 'live.wav');
+    if (sttSel.value) fd.append('model', sttSel.value);
+    if (computeSel.value) fd.append('compute_type', computeSel.value);
+    if (deviceSel.value) fd.append('device', deviceSel.value);
+    if (voiceSel.value) fd.append('voice', voiceSel.value);
+    const res = await jpostForm('/api/voice/live', fd);
+    if (!res.ok){
+      statusEl.textContent = '오류: ' + (res.data.error || res.data.detail || res.status);
+      statusEl.className = 'status failed'; return;
+    }
+    const d = res.data;
+    if (!d.transcript){
+      statusEl.textContent = d.note || '전사 결과가 비었습니다.'; statusEl.className = 'status failed';
+      if (d.metrics) renderMetrics(metricBox, d.metrics, []); return;
+    }
+    addTurn('user', '나' + (d.input_audio_s!=null?` · ${d.input_audio_s}s`:''), d.transcript);
+    addTurn('assistant', 'assistant' + (d.output_audio_s!=null?` · ${d.output_audio_s}s`:''), d.answer || '');
+    if (d.audio_url){
+      respAudio.src = d.audio_url + '?t=' + Date.now();
+      respAudio.play().catch(()=>{ statusEl.textContent='응답 생성됨 (자동재생 차단 — 재생 버튼을 누르세요)'; });
+    }
+    renderMetrics(metricBox, d.metrics, []);
+    sess.turns += 1;
+    if (d.metrics && d.metrics.e2e_ms) sess.e2eSum += Number(d.metrics.e2e_ms.value) || 0;
+    if (d.metrics && d.metrics.bottleneck) sess.lastBottleneck = d.metrics.bottleneck.value;
+    renderSummary();
+    statusEl.textContent = `완료 (턴 ${d.turn_id})`; statusEl.className = 'status succeeded';
+  }
+  return card;
+}
+
 (async function init(){
   const h = await jget('/api/health');
   document.getElementById('root').textContent = h.root;
@@ -627,6 +757,17 @@ function buildServeCard(card, t, statusEl, logEl, metricBox){
     tabsEl.append(tab); cardsEl.append(card);
     if (idx === 0){ tab.classList.add('active'); card.classList.add('active'); }
   });
+
+  // Live Voice 탭(수작업)
+  const lvTab = $('button','tab');
+  lvTab.append($('span','dot ready'), $('span', null, 'Live Voice'));
+  const lvCard = await buildLiveVoiceCard();
+  lvTab.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.card').forEach(x=>x.classList.remove('active'));
+    lvTab.classList.add('active'); lvCard.classList.add('active');
+  };
+  tabsEl.append(lvTab); cardsEl.append(lvCard);
 })();
 </script>
 </body>

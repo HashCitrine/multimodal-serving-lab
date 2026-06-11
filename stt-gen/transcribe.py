@@ -94,8 +94,12 @@ def main():
         ref = args.from_tts
     elif args.audio:
         audio_path = args.audio
-        with wave.open(audio_path, "rb") as w:
-            dur = w.getnframes() / w.getframerate()
+        try:
+            with wave.open(audio_path, "rb") as w:
+                dur = w.getnframes() / w.getframerate()
+        except wave.Error as e:
+            print(f"[warn] wav 메타데이터를 읽지 못했습니다: {e}")
+            dur = 0.0
     else:
         raise SystemExit("입력이 필요합니다: -a <wav> 또는 --from-tts <text>")
 
@@ -107,7 +111,10 @@ def main():
     dt = time.perf_counter() - t0
 
     print(f"[전사] {text}")
-    line = f"[metrics] audio={dur:.2f}s transcribe={dt:.3f}s RTF={dt/dur:.4f}"
+    if dur:
+        line = f"[metrics] audio={dur:.2f}s transcribe={dt:.3f}s RTF={dt/dur:.4f}"
+    else:
+        line = f"[metrics] audio=unknown transcribe={dt:.3f}s RTF=unknown"
     if ref is not None:
         line += f" WER={wer(ref, text):.3f}"
     print(line)

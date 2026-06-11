@@ -36,6 +36,7 @@
   label { font-size:12px; color:var(--mut); display:flex; flex-direction:column; gap:3px; }
   input, select, textarea { background:#0d0f14; color:var(--fg); border:1px solid var(--line);
           border-radius:6px; padding:6px 8px; font:inherit; }
+  input[type=file] { max-width:100%; }
   input[type=number] { width:90px; } input[type=checkbox] { width:auto; }
   textarea { width:100%; min-height:46px; resize:vertical; }
   button { background:var(--accent); color:#fff; border:0; border-radius:6px;
@@ -50,8 +51,24 @@
             word-break:break-word; display:none; }
   .artifacts { display:flex; flex-direction:column; gap:6px; }
   .artifacts img, .artifacts video { max-width:100%; border-radius:6px; border:1px solid var(--line); }
+  .artifacts audio { width:100%; }
   .artifacts a { color:var(--accent); font-size:12px; }
   .muted { color:var(--mut); font-size:12px; }
+  .note { color:var(--mut); font-size:12px; margin:0; }
+  .section { border-top:1px solid var(--line); padding-top:10px; display:flex; flex-direction:column; gap:8px; }
+  .section h3 { font-size:13px; margin:0; font-weight:600; }
+  .artifact-card { background:#11141a; border:1px solid var(--line); border-radius:8px; padding:8px; display:flex; flex-direction:column; gap:6px; }
+  .artifact-card strong { font-size:12px; }
+  .player-note { color:var(--warn); font-size:12px; }
+  .metrics { display:none; background:#10141b; border:1px solid var(--line); border-radius:8px; padding:10px; gap:8px; flex-direction:column; }
+  .metrics h3 { font-size:13px; margin:0; }
+  .metric-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; }
+  .metric { border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:#0d0f14; min-width:0; }
+  .metric .k { color:var(--mut); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .metric .v { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  table.metric-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .metric-table th, .metric-table td { border-top:1px solid var(--line); padding:5px 6px; text-align:right; }
+  .metric-table th:first-child, .metric-table td:first-child { text-align:left; }
 </style>
 </head>
 <body>
@@ -66,9 +83,16 @@
 <script>
 const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const ext = n => (n.split('.').pop() || '').toLowerCase();
+const desc = {
+  'tts-gen': '텍스트를 Piper 음성으로 합성하고 wav 파일을 생성합니다. 실행 완료 후 브라우저에서 재생을 시도합니다.',
+  'stt-gen': '실제 음성 입력 전사와 TTS로 만든 음성을 다시 받아쓰는 왕복 검증을 분리해 실행합니다.',
+  'voice-agent': '질문 텍스트를 입력 음성으로 합성한 뒤 STT, LLM, TTS를 한 턴으로 연결합니다. 응답 음성을 우선 재생합니다.',
+  'avatar-gen': '정지 영상 검증(static)과 실제 립싱크(wav2lip)를 분리해 실행합니다.'
+};
 
 async function jget(u){ const r = await fetch(u); return r.json(); }
 async function jpost(u, body){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }
+async function jpostForm(u, body){ const r = await fetch(u,{method:'POST',body}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }
 
 function paramInput(p){
   const wrap = $('label'); wrap.append($('span', null, p.name + (p.required?' *':'')));
@@ -97,32 +121,133 @@ function collectParams(card){
   return out;
 }
 
-function renderArtifacts(box, target, arts){
-  box.innerHTML = '';
-  if (!arts || !arts.length){ return; }
-  // 가장 최근 산출물 1개를 미리보기 + 전체 링크
-  const top = arts[0]; const url = `/api/artifacts/${target}/${encodeURIComponent(top.name)}`;
-  const e = ext(top.name);
-  if (['png','jpg','jpeg','webp'].includes(e)){ const i=$('img'); i.src=url; box.append(i); }
-  else if (e === 'mp4'){ const v=$('video'); v.src=url; v.controls=true; box.append(v); }
-  else if (['wav','mp3','ogg'].includes(e)){ const a=document.createElement('audio'); a.src=url; a.controls=true; box.append(a); }
-  arts.slice(0,6).forEach(a=>{
-    const link = $('a', null, `${a.name} (${(a.size/1024).toFixed(0)} KB)`);
-    link.href = `/api/artifacts/${target}/${encodeURIComponent(a.name)}`; link.target='_blank';
-    box.append(link);
+function artifactUrl(target, name){
+  return `/api/artifacts/${target}/${encodeURIComponent(name)}`;
+}
+
+function addArtifactCard(box, title, media, link){
+  const c = $('div','artifact-card');
+  c.append($('strong', null, title));
+  c.append(media);
+  if (link) c.append(link);
+  box.append(c);
+  return media;
+}
+
+function artifactLink(target, a){
+  const link = $('a', null, `${a.name} (${(a.size/1024).toFixed(0)} KB)`);
+  link.href = artifactUrl(target, a.name); link.target = '_blank';
+  return link;
+}
+
+function tryAutoplay(box, media, key){
+  if (!media || typeof media.play !== 'function' || box.dataset.autoplayed === key) return;
+  box.dataset.autoplayed = key;
+  media.play().catch(()=>{
+    const msg = $('div','player-note','브라우저 자동 재생이 차단되었습니다. 재생 버튼을 눌러 확인하세요.');
+    box.prepend(msg);
   });
 }
 
+function makeMedia(target, a){
+  const url = artifactUrl(target, a.name);
+  const e = ext(a.name);
+  if (['png','jpg','jpeg','webp'].includes(e)){ const i=$('img'); i.src=url; return i; }
+  if (e === 'mp4'){ const v=$('video'); v.src=url; v.controls=true; return v; }
+  if (['wav','mp3','ogg'].includes(e)){ const au=document.createElement('audio'); au.src=url; au.controls=true; return au; }
+  return null;
+}
+
+function renderArtifacts(box, target, arts, final=false){
+  box.innerHTML = '';
+  if (!arts || !arts.length){ return; }
+  let playTarget = null, playKey = '';
+  if (target === 'voice-agent'){
+    const answer = arts.find(a=>a.role === 'answer_audio') || arts.find(a=>a.role === 'audio');
+    const question = arts.find(a=>a.role === 'question_audio');
+    if (answer){
+      playTarget = addArtifactCard(box, '응답 음성', makeMedia(target, answer), artifactLink(target, answer));
+      playKey = answer.name + ':' + answer.mtime;
+    }
+    if (question) addArtifactCard(box, '입력 음성', makeMedia(target, question), artifactLink(target, question));
+  } else if (target === 'tts-gen'){
+    const audio = arts.find(a=>a.role === 'audio');
+    if (audio){
+      playTarget = addArtifactCard(box, '합성 음성', makeMedia(target, audio), artifactLink(target, audio));
+      playKey = audio.name + ':' + audio.mtime;
+    }
+  } else if (target === 'avatar-gen'){
+    const video = arts.find(a=>a.role === 'avatar_video') || arts.find(a=>a.role === 'video');
+    const speech = arts.find(a=>a.role === 'speech_audio');
+    if (video) addArtifactCard(box, '아바타 영상', makeMedia(target, video), artifactLink(target, video));
+    if (speech) addArtifactCard(box, '합성 음성', makeMedia(target, speech), artifactLink(target, speech));
+  } else {
+    const top = arts[0];
+    const media = makeMedia(target, top);
+    if (media) addArtifactCard(box, '최근 산출물', media, artifactLink(target, top));
+  }
+  if (final) tryAutoplay(box, playTarget, playKey);
+  arts.slice(0,6).forEach(a=>{
+    box.append(artifactLink(target, a));
+  });
+}
+
+function renderMetrics(box, metrics, rows){
+  box.innerHTML = '';
+  const entries = Object.entries(metrics || {});
+  const hasRows = rows && rows.length;
+  if (!entries.length && !hasRows){ box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+  box.append($('h3', null, '실행 지표'));
+  if (entries.length){
+    const grid = $('div','metric-grid');
+    entries.forEach(([_, m])=>{
+      const item = $('div','metric');
+      item.append($('div','k',m.label));
+      const value = m.unit ? `${formatMetricValue(m.value)} ${m.unit}` : formatMetricValue(m.value);
+      item.append($('div','v',value));
+      grid.append(item);
+    });
+    box.append(grid);
+  }
+  if (hasRows){
+    const table = $('table','metric-table');
+    const headers = ['concurrency','requests','wall_s','rps','p50_ms','p95_ms','p99_ms'];
+    const head = $('tr');
+    headers.forEach(h=>head.append($('th', null, metricHeader(h))));
+    const thead = $('thead'); thead.append(head); table.append(thead);
+    const tbody = $('tbody');
+    rows.forEach(r=>{
+      const tr = $('tr');
+      headers.forEach(h=>tr.append($('td', null, formatMetricValue(r[h]))));
+      tbody.append(tr);
+    });
+    table.append(tbody); box.append(table);
+  }
+}
+
+function metricHeader(k){
+  return ({concurrency:'동시성',requests:'요청',wall_s:'wall(s)',rps:'rps',p50_ms:'p50(ms)',p95_ms:'p95(ms)',p99_ms:'p99(ms)'})[k] || k;
+}
+
+function formatMetricValue(v){
+  if (v == null) return '';
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(Math.round(v * 1000) / 1000);
+  return String(v);
+}
+
 let pollTimer = {};
-function pollJob(jobId, card, statusEl, logEl, artBox, target){
+function pollJob(jobId, card, statusEl, logEl, metricBox, artBox, target){
   clearInterval(pollTimer[target]);
   pollTimer[target] = setInterval(async ()=>{
     const j = await jget(`/api/jobs/${jobId}`);
+    const final = j.status === 'succeeded' || j.status === 'failed';
     statusEl.textContent = `상태: ${j.status}` + (j.returncode!=null?` (code ${j.returncode})`:'');
     statusEl.className = 'status ' + j.status;
     logEl.style.display = 'block'; logEl.textContent = j.log.join('\n'); logEl.scrollTop = logEl.scrollHeight;
-    if (artBox) renderArtifacts(artBox, target, j.artifacts);
-    if (j.status === 'succeeded' || j.status === 'failed') clearInterval(pollTimer[target]);
+    if (metricBox) renderMetrics(metricBox, j.metrics, j.metric_rows);
+    if (artBox) renderArtifacts(artBox, target, j.artifacts, final);
+    if (final) clearInterval(pollTimer[target]);
   }, 1000);
 }
 
@@ -131,6 +256,7 @@ function makeCard(t, tabDot){
   const h = $('h2', null, t.label);
   const badge = $('span','badge unknown','…'); h.append(badge);
   card.append(h);
+  if (desc[t.id]) card.append($('p','note',desc[t.id]));
   const hints = $('ul','hints'); hints.style.display='none'; card.append(hints);
 
   // preflight — 카드 배지 + 탭 dot 동시 반영
@@ -143,10 +269,15 @@ function makeCard(t, tabDot){
   }).catch(()=>{ badge.textContent='preflight 실패'; });
 
   const statusEl = $('div','status',''); const logEl = $('pre','log');
+  const metricBox = $('div','metrics');
   const artBox = $('div','artifacts');
 
   if (t.id === 'serve'){
-    buildServeCard(card, t, statusEl, logEl);
+    buildServeCard(card, t, statusEl, logEl, metricBox);
+  } else if (t.id === 'stt-gen'){
+    buildSttCard(card, t, statusEl, logEl, metricBox);
+  } else if (t.id === 'avatar-gen'){
+    buildAvatarCard(card, t, statusEl, logEl, metricBox, artBox);
   } else {
     // 일반 파라미터 폼
     const form = $('div','row');
@@ -160,19 +291,218 @@ function makeCard(t, tabDot){
     const run = $('button', null, '실행');
     run.onclick = async ()=>{
       run.disabled = true; statusEl.textContent='제출 중…'; statusEl.className='status';
+      renderMetrics(metricBox, {}, []);
+      if (artBox) artBox.dataset.autoplayed = '';
       const res = await jpost(`/api/jobs/${t.id}`, {params: collectParams(card)});
       run.disabled = false;
       if (!res.ok){ statusEl.textContent = '오류: ' + (res.data.detail||res.status); statusEl.className='status failed'; return; }
-      pollJob(res.data.job_id, card, statusEl, logEl, t.produces_files?artBox:null, t.id);
+      pollJob(res.data.job_id, card, statusEl, logEl, metricBox, t.produces_files?artBox:null, t.id);
     };
     const runRow = $('div','row'); runRow.append(run); card.append(runRow);
-    card.append(statusEl); card.append(logEl);
+    card.append(statusEl); card.append(metricBox); card.append(logEl);
     if (t.produces_files) card.append(artBox);
   }
   return card;
 }
 
-function buildServeCard(card, t, statusEl, logEl){
+function appendModelParams(fd, root){
+  const params = collectParams(root);
+  ['model','compute_type','device'].forEach(k=>{ if (params[k]) fd.append(k, params[k]); });
+}
+
+function buildSttCard(card, t, statusEl, logEl, metricBox){
+  const artBox = null;
+  const modelRow = $('div','row');
+  t.params.filter(p=>p.name !== 'from_tts').forEach(p=>modelRow.append(paramInput(p)));
+  card.append($('div','muted','모델 옵션')); card.append(modelRow);
+
+  const mic = $('div','section');
+  mic.append($('h3', null, '마이크 녹음 전사'));
+  mic.append($('p','note','브라우저에서 녹음한 PCM을 wav로 인코딩해 faster-whisper에 전달합니다.'));
+  const micRow = $('div','row');
+  const recBtn = $('button', null, '녹음 시작');
+  const stopBtn = $('button','sec','정지');
+  const sendRecBtn = $('button','sec','녹음 전사');
+  stopBtn.disabled = true; sendRecBtn.disabled = true;
+  const recAudio = document.createElement('audio'); recAudio.controls = true; recAudio.style.width = '100%';
+  let recording = null, recordedBlob = null;
+  if (!hasMicrophoneApi()){
+    mic.append($('p','player-note',microphoneUnavailableMessage()));
+  }
+  recBtn.onclick = async ()=>{
+    try {
+      recording = await startWavRecording();
+      recordedBlob = null; recAudio.removeAttribute('src');
+      recBtn.disabled = true; stopBtn.disabled = false; sendRecBtn.disabled = true;
+      statusEl.textContent = '녹음 중…'; statusEl.className = 'status running';
+    } catch(e) {
+      statusEl.textContent = '마이크 오류: ' + e.message; statusEl.className = 'status failed';
+    }
+  };
+  stopBtn.onclick = async ()=>{
+    recordedBlob = await recording.stop();
+    recAudio.src = URL.createObjectURL(recordedBlob);
+    recBtn.disabled = false; stopBtn.disabled = true; sendRecBtn.disabled = false;
+    statusEl.textContent = '녹음 완료'; statusEl.className = 'status';
+  };
+  sendRecBtn.onclick = async ()=>{
+    if (!recordedBlob) return;
+    const fd = new FormData(); fd.append('audio', recordedBlob, 'recording.wav'); appendModelParams(fd, modelRow);
+    await submitSttAudio(fd, statusEl, logEl, card);
+  };
+  micRow.append(recBtn, stopBtn, sendRecBtn); mic.append(micRow, recAudio); card.append(mic);
+
+  const upload = $('div','section');
+  upload.append($('h3', null, 'wav 업로드 전사'));
+  const file = $('input'); file.type = 'file'; file.accept = '.wav,audio/wav';
+  const uploadBtn = $('button', null, '업로드 전사');
+  uploadBtn.onclick = async ()=>{
+    if (!file.files.length){ statusEl.textContent = 'wav 파일을 선택하세요.'; statusEl.className='status failed'; return; }
+    const fd = new FormData(); fd.append('audio', file.files[0]); appendModelParams(fd, modelRow);
+    await submitSttAudio(fd, statusEl, logEl, card);
+  };
+  const uploadRow = $('div','row'); uploadRow.append(file, uploadBtn); upload.append(uploadRow); card.append(upload);
+
+  const round = $('div','section');
+  round.append($('h3', null, 'TTS→STT 왕복 검증'));
+  round.append($('p','note','입력 텍스트를 먼저 음성으로 합성한 뒤 그 음성을 다시 전사해 WER를 계산합니다.'));
+  const w = $('label'); w.style.flex='1 1 100%'; w.append($('span', null, 'from_tts'));
+  const ta = $('textarea'); ta.value = t.params.find(p=>p.name === 'from_tts').default; w.append(ta);
+  const roundBtn = $('button', null, '왕복 실행');
+  roundBtn.onclick = async ()=>{
+    const params = collectParams(modelRow); params.from_tts = ta.value.trim();
+    statusEl.textContent='제출 중…'; statusEl.className='status';
+    renderMetrics(metricBox, {}, []);
+    const res = await jpost('/api/jobs/stt-gen', {params});
+    if (!res.ok){ statusEl.textContent = '오류: ' + (res.data.detail||res.status); statusEl.className='status failed'; return; }
+    pollJob(res.data.job_id, card, statusEl, logEl, metricBox, artBox, 'stt-gen');
+  };
+  const roundRow = $('div','row'); roundRow.append(roundBtn);
+  round.append(w, roundRow); card.append(round);
+  card.append(statusEl, metricBox, logEl);
+}
+
+async function submitSttAudio(fd, statusEl, logEl, card){
+  statusEl.textContent='제출 중…'; statusEl.className='status';
+  const metricBox = card.querySelector('.metrics');
+  renderMetrics(metricBox, {}, []);
+  const res = await jpostForm('/api/stt/audio', fd);
+  if (!res.ok){ statusEl.textContent = '오류: ' + (res.data.detail||res.status); statusEl.className='status failed'; return; }
+  pollJob(res.data.job_id, card, statusEl, logEl, metricBox, null, 'stt-gen');
+}
+
+async function startWavRecording(){
+  const stream = await getAudioStream();
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ctx.createMediaStreamSource(stream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  processor.onaudioprocess = e => chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  source.connect(processor); processor.connect(ctx.destination);
+  return {
+    stop: async ()=>{
+      processor.disconnect(); source.disconnect(); stream.getTracks().forEach(t=>t.stop());
+      await ctx.close();
+      return encodeWav(chunks, ctx.sampleRate);
+    }
+  };
+}
+
+function hasMicrophoneApi(){
+  return Boolean(
+    (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) ||
+    navigator.getUserMedia ||
+    navigator.webkitGetUserMedia ||
+    navigator.mozGetUserMedia
+  );
+}
+
+function microphoneUnavailableMessage(){
+  if (window.isSecureContext) return '이 브라우저가 마이크 녹음을 지원하지 않습니다. wav 업로드 전사를 사용하세요.';
+  return '마이크 녹음은 보안 컨텍스트에서만 동작합니다. 같은 머신에서는 http://localhost:7860 또는 http://127.0.0.1:7860 으로 접속하고, 다른 기기에서는 HTTPS가 필요합니다.';
+}
+
+function getAudioStream(){
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+    return navigator.mediaDevices.getUserMedia({audio:true});
+  }
+  const legacy = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+  if (legacy){
+    return new Promise((resolve, reject)=>legacy.call(navigator, {audio:true}, resolve, reject));
+  }
+  throw new Error(microphoneUnavailableMessage());
+}
+
+function encodeWav(chunks, sampleRate){
+  const length = chunks.reduce((n,c)=>n+c.length,0);
+  const pcm = new Float32Array(length);
+  let offset = 0; chunks.forEach(c=>{ pcm.set(c, offset); offset += c.length; });
+  const bytes = 44 + pcm.length * 2;
+  const buffer = new ArrayBuffer(bytes);
+  const view = new DataView(buffer);
+  const write = (pos, s)=>{ for (let i=0; i<s.length; i++) view.setUint8(pos+i, s.charCodeAt(i)); };
+  write(0, 'RIFF'); view.setUint32(4, bytes - 8, true); write(8, 'WAVE');
+  write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  write(36, 'data'); view.setUint32(40, pcm.length * 2, true);
+  let p = 44;
+  for (let i=0; i<pcm.length; i++, p+=2){
+    const s = Math.max(-1, Math.min(1, pcm[i]));
+    view.setInt16(p, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([view], {type:'audio/wav'});
+}
+
+function buildAvatarCard(card, t, statusEl, logEl, metricBox, artBox){
+  const commonFields = ()=>{
+    const box = $('div','row');
+    ['text','prompt','device'].forEach(name=>{
+      const p = t.params.find(x=>x.name === name);
+      if (p.type === 'str'){
+        const w = $('label'); w.style.flex='1 1 100%'; w.append($('span', null, name));
+        const ta = $('textarea'); ta.dataset.pname=name; ta.dataset.ptype='str'; ta.value = p.default ?? ''; w.append(ta); box.append(w);
+      } else box.append(paramInput(p));
+    });
+    return box;
+  };
+  const runAvatar = async (section, backend)=>{
+    const params = collectParams(section); params.backend = backend;
+    const textDefault = t.params.find(x=>x.name === 'text').default;
+    if (params.prompt && params.text === textDefault) delete params.text;
+    statusEl.textContent='제출 중…'; statusEl.className='status'; artBox.dataset.autoplayed = '';
+    renderMetrics(metricBox, {}, []);
+    const res = await jpost('/api/jobs/avatar-gen', {params});
+    if (!res.ok){ statusEl.textContent = '오류: ' + (res.data.detail||res.status); statusEl.className='status failed'; return; }
+    pollJob(res.data.job_id, card, statusEl, logEl, metricBox, artBox, 'avatar-gen');
+  };
+
+  const stat = $('div','section');
+  stat.append($('h3', null, '정지 영상 검증 (static)'));
+  stat.append($('p','note','ffmpeg로 정지 얼굴 이미지와 음성을 합쳐 mp4를 만듭니다. 입모양 모션은 없습니다.'));
+  const statFields = commonFields();
+  const statBtn = $('button', null, 'static 실행');
+  statBtn.onclick = ()=>runAvatar(statFields, 'static');
+  const statRow = $('div','row'); statRow.append(statBtn);
+  stat.append(statFields, statRow); card.append(stat);
+
+  const wav = $('div','section');
+  wav.append($('h3', null, '실제 립싱크 (wav2lip)'));
+  const wavHints = $('ul','hints'); wavHints.style.display = 'none'; wav.append(wavHints);
+  jget('/api/preflight/avatar-gen/wav2lip').then(pf=>{
+    const bad = pf.checks.filter(c=>!c.ok);
+    if (bad.length){ wavHints.style.display='block'; bad.forEach(c=>wavHints.append($('li', null, `${c.name}: ${c.hint}`))); }
+    else wav.append($('p','note','wav2lip 준비 완료'));
+  });
+  const wavFields = commonFields();
+  const wavBtn = $('button', null, 'wav2lip 실행');
+  wavBtn.onclick = ()=>runAvatar(wavFields, 'wav2lip');
+  const wavRow = $('div','row'); wavRow.append(wavBtn);
+  wav.append(wavFields, wavRow); card.append(wav);
+  card.append(statusEl, metricBox, logEl, artBox);
+}
+
+function buildServeCard(card, t, statusEl, logEl, metricBox){
   const ctl = $('div','row');
   const start = $('button', null, '서버 start');
   const stop = $('button','sec'); stop.textContent='stop';
@@ -206,13 +536,14 @@ function buildServeCard(card, t, statusEl, logEl){
   const benchStatus = $('div','status','');
   benchBtn.onclick = async ()=>{
     benchBtn.disabled=true; benchStatus.textContent='제출 중…';
+    renderMetrics(metricBox, {}, []);
     const res = await jpost('/api/jobs/serve',{params:collectParams(benchRow.closest('.card'))});
     benchBtn.disabled=false;
     if(!res.ok){ benchStatus.textContent='오류: '+(res.data.detail||res.status); benchStatus.className='status failed'; return; }
-    pollJob(res.data.job_id, card, benchStatus, logEl, null, 'serve');
+    pollJob(res.data.job_id, card, benchStatus, logEl, metricBox, null, 'serve');
   };
   const benchBtnRow = $('div','row'); benchBtnRow.append(benchBtn); card.append(benchBtnRow);
-  card.append(statusEl); card.append(benchStatus); card.append(out); card.append(logEl);
+  card.append(statusEl); card.append(benchStatus); card.append(metricBox); card.append(out); card.append(logEl);
   refresh();
 }
 

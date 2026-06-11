@@ -19,9 +19,11 @@ target별 allowlist 인자만으로 subprocess를 실행해 로그·산출물을
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -31,13 +33,14 @@ from typing import Any, Optional
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 LAB_UI = Path(__file__).resolve().parent
 ROOT = LAB_UI.parent  # 저장소 루트 (multimodal-serving-lab)
 STATIC = LAB_UI / "static"
+UPLOADS = Path(tempfile.gettempdir()) / "multimodal-serving-lab" / "uploads"
 LOG_TAIL = 600  # 작업별 로그 보관 줄 수
 
 
@@ -309,11 +312,213 @@ def list_artifacts(target: str) -> list[dict]:
     for f in sorted(d.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
         if f.is_file():
             st = f.stat()
-            items.append({"name": f.name, "size": st.st_size, "mtime": st.st_mtime})
+            items.append({
+                "name": f.name,
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+                "role": artifact_role(target, f.name),
+            })
     return items[:50]
 
 
+def artifact_role(target: str, name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if target == "voice-agent":
+        if name == "answer.wav":
+            return "answer_audio"
+        if name == "question.wav":
+            return "question_audio"
+    if target == "avatar-gen":
+        if suffix == ".mp4":
+            return "avatar_video"
+        if name == "speech.wav":
+            return "speech_audio"
+        if name == "placeholder_face.png":
+            return "placeholder_face"
+    if suffix in (".wav", ".mp3", ".ogg", ".flac"):
+        return "audio"
+    if suffix in (".mp4", ".mov", ".webm"):
+        return "video"
+    if suffix in (".png", ".jpg", ".jpeg", ".webp"):
+        return "image"
+    return "file"
+
+
+def parse_job_metrics(target: str, log: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    metrics: dict[str, Any] = {}
+    rows: list[dict[str, Any]] = []
+
+    for line in log:
+        if "[metrics]" in line:
+            metrics.update(_parse_key_values(line.split("[metrics]", 1)[1]))
+        if target == "serve":
+            row = _parse_serve_bench_row(line)
+            if row:
+                rows.append(row)
+            if "[server metrics]" in line:
+                metrics.update(_parse_key_values(line.split("[server metrics]", 1)[1]))
+        elif target == "voice-agent":
+            _parse_voice_line(line, metrics)
+        elif target == "avatar-gen":
+            _parse_avatar_line(line, metrics)
+
+    return _label_metrics(target, metrics), rows
+
+
+def _parse_key_values(text: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    cleaned = text.replace("≈", "=")
+    for key, value in re.findall(r"([A-Za-z0-9_./-]+)\s*=\s*([^\s,)]+)", cleaned):
+        out[_metric_key(key)] = _metric_value(value)
+    rt = re.search(r"\(x([0-9.]+)\s+realtime\)", text)
+    if rt:
+        out["realtime_x"] = float(rt.group(1))
+    return out
+
+
+def _metric_key(key: str) -> str:
+    aliases = {
+        "audio": "audio_s",
+        "synth": "synth_s",
+        "transcribe": "transcribe_s",
+        "total": "total_s",
+        "decode_tok/s": "decode_tok_s",
+        "throughput_rps": "rps",
+    }
+    return aliases.get(key, key).replace("/", "_").lower()
+
+
+def _metric_value(value: str) -> Any:
+    v = value.strip().rstrip(",")
+    if v == "unknown":
+        return v
+    multiplier = 1.0
+    if v.endswith("ms"):
+        multiplier = 1.0
+        v = v[:-2]
+    elif v.endswith("s"):
+        multiplier = 1.0
+        v = v[:-1]
+    try:
+        n = float(v)
+        return int(n) if n.is_integer() else round(n * multiplier, 4)
+    except ValueError:
+        return value.strip()
+
+
+def _parse_voice_line(line: str, metrics: dict[str, Any]) -> None:
+    patterns = [
+        (r"STT\s*:\s*([0-9.]+)\s*ms", "stt_ms"),
+        (r"LLM TTFT\s*:\s*([0-9.]+)\s*ms", "llm_ttft_ms"),
+        (r"LLM total\s*:\s*([0-9.]+)\s*ms", "llm_total_ms"),
+        (r"TTS\s*:\s*([0-9.]+)\s*ms", "tts_ms"),
+        (r"E2E 응답지연\s*:\s*([0-9.]+)\s*ms", "e2e_ms"),
+        (r"병목 단계\s*:\s*([A-Za-z0-9_-]+)\s*\(([0-9.]+)%\)", "bottleneck"),
+    ]
+    for pattern, key in patterns:
+        m = re.search(pattern, line)
+        if not m:
+            continue
+        if key == "bottleneck":
+            metrics["bottleneck"] = m.group(1)
+            metrics["bottleneck_pct"] = float(m.group(2))
+        else:
+            metrics[key] = float(m.group(1))
+
+
+def _parse_avatar_line(line: str, metrics: dict[str, Any]) -> None:
+    m = re.search(r"\[TTS\]\s+audio=([0-9.]+)s\s+synth=([0-9.]+)s", line)
+    if m:
+        metrics["audio_s"] = float(m.group(1))
+        metrics["tts_s"] = float(m.group(2))
+    m = re.search(r"\[lipsync:([^\]]+)\]\s+([0-9.]+)s\s+RTF=([0-9.]+)", line)
+    if m:
+        metrics["backend"] = m.group(1)
+        metrics["lipsync_s"] = float(m.group(2))
+        metrics["lipsync_rtf"] = float(m.group(3))
+    m = re.search(r"\[E2E\]\s+([0-9.]+)s", line)
+    if m:
+        metrics["e2e_s"] = float(m.group(1))
+
+
+def _parse_serve_bench_row(line: str) -> Optional[dict[str, Any]]:
+    parts = line.split()
+    if len(parts) != 7:
+        return None
+    try:
+        conc, reqs = int(parts[0]), int(parts[1])
+        wall, rps, p50, p95, p99 = [float(x) for x in parts[2:]]
+    except ValueError:
+        return None
+    return {
+        "concurrency": conc,
+        "requests": reqs,
+        "wall_s": wall,
+        "rps": rps,
+        "p50_ms": p50,
+        "p95_ms": p95,
+        "p99_ms": p99,
+    }
+
+
+def _label_metrics(target: str, metrics: dict[str, Any]) -> dict[str, Any]:
+    labels = {
+        "audio_s": "오디오 길이",
+        "synth_s": "합성 시간",
+        "transcribe_s": "전사 시간",
+        "rtf": "RTF",
+        "wer": "WER",
+        "realtime_x": "실시간 배수",
+        "sr": "샘플레이트",
+        "chars": "문자 수",
+        "ttft": "TTFT",
+        "tokens": "토큰 수",
+        "decode_tok_s": "Decode tok/s",
+        "total_s": "총 시간",
+        "stt_ms": "STT",
+        "llm_ttft_ms": "LLM TTFT",
+        "llm_total_ms": "LLM total",
+        "tts_ms": "TTS",
+        "e2e_ms": "E2E",
+        "bottleneck": "병목 단계",
+        "bottleneck_pct": "병목 비중",
+        "tts_s": "TTS 시간",
+        "lipsync_s": "립싱크 시간",
+        "lipsync_rtf": "립싱크 RTF",
+        "e2e_s": "E2E",
+        "backend": "Backend",
+        "avg_batch_size": "평균 배치",
+        "max_observed_batch": "최대 배치",
+        "total_batches": "총 배치 수",
+    }
+    units = {
+        "audio_s": "s", "synth_s": "s", "transcribe_s": "s", "total_s": "s",
+        "ttft": "ms", "stt_ms": "ms", "llm_ttft_ms": "ms", "llm_total_ms": "ms",
+        "tts_ms": "ms", "e2e_ms": "ms", "tts_s": "s", "lipsync_s": "s", "e2e_s": "s",
+        "decode_tok_s": "tok/s", "realtime_x": "x", "bottleneck_pct": "%",
+    }
+    order = {
+        "tts-gen": ["audio_s", "synth_s", "rtf", "realtime_x", "sr", "chars"],
+        "stt-gen": ["audio_s", "transcribe_s", "rtf", "wer"],
+        "llm-serve": ["ttft", "tokens", "decode_tok_s", "total_s"],
+        "voice-agent": ["e2e_ms", "stt_ms", "llm_ttft_ms", "llm_total_ms", "tts_ms", "bottleneck", "bottleneck_pct"],
+        "avatar-gen": ["backend", "audio_s", "tts_s", "lipsync_s", "lipsync_rtf", "e2e_s"],
+        "serve": ["avg_batch_size", "max_observed_batch", "total_batches"],
+    }.get(target, list(metrics))
+    return {
+        key: {
+            "label": labels.get(key, key),
+            "value": metrics[key],
+            "unit": units.get(key, ""),
+        }
+        for key in order
+        if key in metrics
+    }
+
+
 def job_view(job: dict) -> dict:
+    log = list(job["log"])
+    metrics, metric_rows = parse_job_metrics(job["target"], log)
     return {
         "id": job["id"],
         "target": job["target"],
@@ -322,7 +527,9 @@ def job_view(job: dict) -> dict:
         "queued_at": job["queued_at"],
         "started_at": job["started_at"],
         "ended_at": job["ended_at"],
-        "log": list(job["log"]),
+        "log": log,
+        "metrics": metrics,
+        "metric_rows": metric_rows,
         "artifacts": list_artifacts(job["target"]) if TARGETS[job["target"]]["produces_files"] else [],
     }
 
@@ -367,7 +574,7 @@ def preflight(target: str) -> dict:
                                   "(또는 카드 실행 시 첫 회 자동 설치 — 무거운 타깃은 시간이 걸립니다).",
     })
 
-    if target in ("tts-gen", "voice-agent"):
+    if target in ("tts-gen", "voice-agent", "avatar-gen"):
         vdir = ROOT / "tts-gen" / "models"
         v_ok = _voice_present(vdir, "en_US-lessac-medium")
         checks.append({
@@ -395,6 +602,54 @@ def preflight(target: str) -> dict:
 
     status = "ready" if all(c["ok"] for c in checks) else "needs_setup"
     return {"target": target, "status": status, "checks": checks}
+
+
+def avatar_wav2lip_preflight() -> dict:
+    cfg = {}
+    try:
+        with open(ROOT / "avatar-gen" / "config.yaml", "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    lip = cfg.get("lipsync", {})
+    base = ROOT / "avatar-gen"
+
+    def resolve(value: str) -> Path:
+        p = Path(value).expanduser()
+        return p if p.is_absolute() else (base / p).resolve()
+
+    repo_value = lip.get("wav2lip_dir") or os.environ.get("WAV2LIP_DIR", "")
+    ckpt_value = lip.get("wav2lip_ckpt") or os.environ.get("WAV2LIP_CKPT", "")
+    repo = resolve(repo_value) if repo_value else Path()
+    ckpt = resolve(ckpt_value) if ckpt_value else Path()
+
+    checks = [
+        {
+            "name": "Wav2Lip repo",
+            "ok": bool(repo_value) and (repo / "inference.py").exists(),
+            "hint": "" if repo_value else "config.yaml의 wav2lip_dir 또는 WAV2LIP_DIR가 필요합니다.",
+        },
+        {
+            "name": "Wav2Lip checkpoint",
+            "ok": bool(ckpt_value) and ckpt.exists(),
+            "hint": "" if ckpt_value else "config.yaml의 wav2lip_ckpt 또는 WAV2LIP_CKPT가 필요합니다.",
+        },
+        {
+            "name": "ffmpeg",
+            "ok": shutil.which("ffmpeg") is not None,
+            "hint": "" if shutil.which("ffmpeg") else "ffmpeg 미설치 — `brew install ffmpeg`.",
+        },
+    ]
+    if repo_value and not checks[0]["ok"]:
+        checks[0]["hint"] = f"inference.py를 찾을 수 없습니다: {repo}"
+    if ckpt_value and not checks[1]["ok"]:
+        checks[1]["hint"] = f"checkpoint를 찾을 수 없습니다: {ckpt}"
+    return {
+        "target": "avatar-gen",
+        "backend": "wav2lip",
+        "status": "ready" if all(c["ok"] for c in checks) else "needs_setup",
+        "checks": checks,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +773,11 @@ async def api_preflight(target: str):
     return preflight(target)
 
 
+@app.get("/api/preflight/avatar-gen/wav2lip")
+async def api_avatar_wav2lip_preflight():
+    return avatar_wav2lip_preflight()
+
+
 class JobRequest(BaseModel):
     params: dict = {}
 
@@ -536,6 +796,44 @@ async def create_job(target: str, body: JobRequest):
         cli_args = ["--url", SERVE_URL, *cli_args]
     cmd = [*target_cmd(target), TARGETS[target]["script"], *cli_args]
     job = _new_job(target, cmd)
+    threading.Thread(target=_run_job, args=(job,), daemon=True).start()
+    return {"job_id": job["id"], "cmd": cmd}
+
+
+@app.post("/api/stt/audio")
+async def create_stt_audio_job(
+    audio: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    compute_type: Optional[str] = Form(None),
+    device: Optional[str] = Form(None),
+):
+    suffix = Path(audio.filename or "").suffix.lower()
+    if suffix and suffix != ".wav":
+        raise HTTPException(400, "현재 STT 업로드는 wav 파일만 지원합니다.")
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    path = UPLOADS / f"stt_{uuid.uuid4().hex}.wav"
+    try:
+        with open(path, "wb") as f:
+            shutil.copyfileobj(audio.file, f)
+    except Exception as e:
+        raise HTTPException(400, f"업로드 저장 실패: {e}")
+    finally:
+        await audio.close()
+
+    payload = {
+        k: v for k, v in {
+            "model": model,
+            "compute_type": compute_type,
+            "device": device,
+        }.items()
+        if v
+    }
+    try:
+        cli_args = build_args("stt-gen", payload)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    cmd = [*target_cmd("stt-gen"), TARGETS["stt-gen"]["script"], "--audio", str(path), *cli_args]
+    job = _new_job("stt-gen", cmd)
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()
     return {"job_id": job["id"], "cmd": cmd}
 
@@ -618,7 +916,7 @@ async def api_serve_proxy_infer(body: InferBody):
 
 def main():
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=7860, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=7860, log_level="info")
 
 
 if __name__ == "__main__":

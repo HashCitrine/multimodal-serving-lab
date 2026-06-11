@@ -2,7 +2,7 @@
 
 server:
   host: "127.0.0.1"
-  port: 8000
+  port: 8808
 
 scheduler:
   max_batch_size: 8     # 한 배치 최대 요청 수

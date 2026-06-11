@@ -18,7 +18,9 @@ target별 allowlist 인자만으로 subprocess를 실행해 로그·산출물을
 """
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -55,9 +57,9 @@ TARGETS: dict[str, dict] = {
         "kind": "serve",  # 상시 서버 + bench job
         "script": "bench.py",  # job 경로로는 bench만 실행
         "params": {
-            "concurrency": P("--concurrency", "intlist"),
-            "requests": P("--requests", "int", min=1, max=100000),
-            "payload": P("--payload", "str"),
+            "concurrency": P("--concurrency", "intlist", default="1 2 4"),
+            "requests": P("--requests", "int", min=1, max=100000, default=32),
+            "payload": P("--payload", "str", default="hello serving spine"),
         },
         "produces_files": False,
     },
@@ -67,11 +69,11 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "generate.py",
         "params": {
-            "prompt": P("-p", "str"),
+            "prompt": P("-p", "str", default="a cinematic mountain landscape at sunset"),
             "negative_prompt": P("-n", "str"),
-            "width": P("-W", "int", min=64, max=2048),
-            "height": P("-H", "int", min=64, max=2048),
-            "steps": P("-s", "int", min=1, max=150),
+            "width": P("-W", "int", min=64, max=2048, default=512),
+            "height": P("-H", "int", min=64, max=2048, default=512),
+            "steps": P("-s", "int", min=1, max=150, default=20),
             "guidance": P("-g", "float", min=0.0, max=30.0),
             "num_images": P("-N", "int", min=1, max=8),
             "seed": P("--seed", "int", min=-1, max=2**31 - 1),
@@ -84,14 +86,14 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "generate.py",
         "params": {
-            "prompt": P("-p", "str", required=True),
+            "prompt": P("-p", "str", required=True, default="a cat walking in a garden"),
             "negative": P("-n", "str"),
-            "model": P("-m", "choice", choices=["animatediff", "zeroscope"]),
-            "steps": P("--steps", "int", min=1, max=150),
+            "model": P("-m", "choice", choices=["animatediff", "zeroscope"], default="animatediff"),
+            "steps": P("--steps", "int", min=1, max=150, default=20),
             "guidance": P("--guidance", "float", min=0.0, max=30.0),
             "width": P("--width", "int", min=64, max=2048),
             "height": P("--height", "int", min=64, max=2048),
-            "frames": P("--frames", "int", min=1, max=240),
+            "frames": P("--frames", "int", min=1, max=240, default=16),
             "fps": P("--fps", "int", min=1, max=60),
             "seed": P("--seed", "int", min=-1, max=2**31 - 1),
         },
@@ -103,7 +105,7 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "synthesize.py",
         "params": {
-            "text": P("-t", "str"),
+            "text": P("-t", "str", default="Hello, this is a local Piper text to speech test."),
             "voice": P("--voice", "str"),
             "length_scale": P("--length-scale", "float", min=0.1, max=5.0),
             "download": P("--download", "bool"),
@@ -117,12 +119,14 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "transcribe.py",
         "params": {
-            "from_tts": P("--from-tts", "str"),
+            "from_tts": P("--from-tts", "str", default="hello from whisper"),
             "model": P("--model", "choice",
-                       choices=["tiny.en", "base.en", "small.en", "medium.en", "large-v3"]),
+                       choices=["tiny.en", "base.en", "small.en", "medium.en", "large-v3"],
+                       default="base.en"),
             "compute_type": P("--compute-type", "choice",
-                              choices=["int8", "float32", "float16", "int8_float16"]),
-            "device": P("--device", "choice", choices=["auto", "cpu", "cuda"]),
+                              choices=["int8", "float32", "float16", "int8_float16"],
+                              default="int8"),
+            "device": P("--device", "choice", choices=["auto", "cpu", "cuda"], default="auto"),
         },
         "produces_files": False,
     },
@@ -132,9 +136,9 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "chat.py",
         "params": {
-            "prompt": P("-p", "str", required=True),
+            "prompt": P("-p", "str", required=True, default="Explain MLOps in one sentence."),
             "model": P("--model", "str"),
-            "max_tokens": P("--max-tokens", "int", min=1, max=4096),
+            "max_tokens": P("--max-tokens", "int", min=1, max=4096, default=64),
         },
         "produces_files": False,
     },
@@ -144,7 +148,7 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "agent.py",
         "params": {
-            "ask": P("--ask", "str"),
+            "ask": P("--ask", "str", default="How do you spell necessary?"),
         },
         "produces_files": True,
     },
@@ -155,9 +159,9 @@ TARGETS: dict[str, dict] = {
         "script": "pipeline.py",
         "params": {
             "prompt": P("--prompt", "str"),
-            "text": P("--text", "str"),
-            "backend": P("--backend", "choice", choices=["static", "wav2lip"]),
-            "device": P("--device", "choice", choices=["auto", "cuda", "mps", "cpu"]),
+            "text": P("--text", "str", default="Hello, I am your tutor."),
+            "backend": P("--backend", "choice", choices=["static", "wav2lip"], default="static"),
+            "device": P("--device", "choice", choices=["auto", "cuda", "mps", "cpu"], default="auto"),
         },
         "produces_files": True,
     },
@@ -434,11 +438,24 @@ def serve_start() -> dict:
             cwd=str(target_dir("serve")),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
+            # 새 세션(프로세스 그룹) → `uv run`이 띄운 자식 서버까지 그룹 단위로 종료 가능.
+            start_new_session=True,
         )
         SERVE["proc"] = proc
         SERVE["started_at"] = time.time()
         threading.Thread(target=_serve_drain, args=(proc,), daemon=True).start()
         return {"status": "starting", "url": SERVE_URL}
+
+
+def _kill_group(proc, sig) -> None:
+    """proc의 프로세스 그룹 전체에 시그널. 그룹이 없으면 proc만."""
+    try:
+        os.killpg(os.getpgid(proc.pid), sig)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            pass
 
 
 def serve_stop() -> dict:
@@ -447,11 +464,13 @@ def serve_stop() -> dict:
         if proc is None or proc.poll() is not None:
             SERVE["proc"] = None
             return {"status": "stopped"}
-        proc.terminate()
+        # `uv run python server.py`는 uv(부모) + 실제 서버(자식) 구조라
+        # 그룹 단위 종료로 자식까지 확실히 내려 8000(또는 설정 포트)을 해제한다.
+        _kill_group(proc, signal.SIGTERM)
         try:
             proc.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_group(proc, signal.SIGKILL)
         SERVE["proc"] = None
         return {"status": "stopped"}
 
@@ -487,6 +506,7 @@ def _param_view(params: dict) -> list[dict]:
             "name": name, "type": p["type"],
             "choices": p.get("choices"),
             "required": bool(p.get("required")),
+            "default": p.get("default"),
         })
     return out
 
@@ -510,6 +530,10 @@ async def create_job(target: str, body: JobRequest):
         cli_args = build_args(target, body.params or {})
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # serve bench(bench.py)는 lab-ui가 관리하는 serve 포트를 향하도록 --url을 주입한다.
+    # (config의 server.port 변경 시 bench.py 기본값 8000과 어긋나는 것을 방지)
+    if target == "serve":
+        cli_args = ["--url", SERVE_URL, *cli_args]
     cmd = [*target_cmd(target), TARGETS[target]["script"], *cli_args]
     job = _new_job(target, cmd)
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()

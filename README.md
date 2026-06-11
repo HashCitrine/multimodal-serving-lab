@@ -16,6 +16,9 @@
 - `llm-serve/`: LLM 서빙·양자화 최적화 — 로컬 Ollama(OpenAI 호환)↔클라우드 vLLM 전환 구조, 양자화/배칭 벤치 (Phase 3 완료)
 - `voice-agent/`: STT→LLM→TTS 음성 에이전트 — 대화 턴 end-to-end 지연 예산 측정(병목: warm=STT, cold=LLM)
 - `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형 (Phase 4)
+- `docs/project-flow-and-terms.md`: 흐름·용어·실험 기록 문서 안내
+- `docs/project-flow.md`: 전체 Phase 흐름·서브 프로젝트별 로직 해설
+- `docs/glossary.md`: 멀티모달·서빙·최적화 핵심 용어 사전
 - `docs/experiments.md`: 시도한 내용·결과·한계, 벤치 수치 기록
 
 ## 실행 환경 (device 이식성)

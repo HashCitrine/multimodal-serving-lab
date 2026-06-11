@@ -171,6 +171,233 @@ TARGETS: dict[str, dict] = {
 }
 
 
+PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
+    "serve": {
+        "concurrency": {
+            "help": "벤치마크에서 동시에 보낼 요청 수 목록입니다.",
+            "impact": "값을 키우면 동적 배칭과 큐 대기, 처리량 변화가 더 잘 드러납니다.",
+            "placeholder": "예: 1 2 4 8",
+        },
+        "requests": {
+            "help": "각 동시성 단계에서 보낼 총 요청 수입니다.",
+            "impact": "값이 클수록 결과가 안정적이지만 벤치마크 시간이 늘어납니다.",
+        },
+        "payload": {
+            "help": "/infer에 보낼 입력 문자열입니다.",
+            "impact": "echo 어댑터에서는 출력 내용만 달라지고 지연 특성은 거의 변하지 않습니다.",
+        },
+    },
+    "sd-gen": {
+        "prompt": {
+            "help": "생성하려는 이미지 내용을 자연어로 설명합니다.",
+            "impact": "구체적으로 쓸수록 구도, 소재, 스타일이 프롬프트에 더 강하게 맞춰집니다.",
+        },
+        "negative_prompt": {
+            "help": "피하고 싶은 요소를 적습니다.",
+            "impact": "불필요한 품질 저하, 워터마크, 흐림 같은 특징을 줄이는 데 씁니다.",
+            "empty": "비워두면 sd-gen/config.yaml의 negative_prompt를 사용합니다.",
+            "placeholder": "예: blurry, low quality, watermark",
+        },
+        "width": {
+            "help": "이미지 너비(px)입니다.",
+            "impact": "커질수록 디테일과 메모리 사용량, 생성 시간이 늘어납니다.",
+        },
+        "height": {
+            "help": "이미지 높이(px)입니다.",
+            "impact": "커질수록 디테일과 메모리 사용량, 생성 시간이 늘어납니다.",
+        },
+        "steps": {
+            "help": "디퓨전 추론 반복 횟수입니다.",
+            "impact": "보통 늘리면 품질이 안정되지만 생성 시간이 거의 비례해 증가합니다.",
+        },
+        "guidance": {
+            "help": "CFG scale입니다. 프롬프트를 얼마나 강하게 따를지 정합니다.",
+            "impact": "너무 낮으면 프롬프트 반영이 약하고, 너무 높으면 과장되거나 깨질 수 있습니다.",
+            "empty": "비워두면 sd-gen/config.yaml의 guidance_scale을 사용합니다.",
+        },
+        "num_images": {
+            "help": "한 번에 생성할 이미지 개수입니다.",
+            "impact": "개수를 늘리면 비교 후보가 늘지만 실행 시간과 메모리 사용량도 늘어납니다.",
+            "empty": "비워두면 sd-gen/config.yaml의 num_images를 사용합니다.",
+        },
+        "seed": {
+            "help": "난수 시드입니다. 같은 설정과 시드를 쓰면 결과 재현에 도움이 됩니다.",
+            "impact": "-1은 매번 랜덤이며, 정수를 넣으면 같은 구도를 다시 확인하기 쉽습니다.",
+            "empty": "비워두면 sd-gen/config.yaml의 seed를 사용합니다.",
+            "placeholder": "예: -1 또는 1234",
+        },
+    },
+    "video-gen": {
+        "prompt": {
+            "help": "생성할 영상 장면과 움직임을 설명합니다.",
+            "impact": "움직임, 피사체, 카메라 표현을 명시하면 결과 방향이 더 분명해집니다.",
+        },
+        "negative": {
+            "help": "영상에서 피하고 싶은 요소를 적습니다.",
+            "impact": "흐림, 낮은 품질, 왜곡 같은 특징을 줄이는 데 씁니다.",
+            "empty": "비워두면 CLI 내부의 기본 negative prompt를 사용합니다.",
+            "placeholder": "예: blurry, bad quality, flicker",
+        },
+        "model": {
+            "help": "사용할 비디오 생성 백엔드입니다.",
+            "impact": "모델마다 기본 해상도, 프레임 수, 품질과 속도 특성이 다릅니다.",
+        },
+        "steps": {
+            "help": "비디오 생성 추론 반복 횟수입니다.",
+            "impact": "늘리면 안정성이 좋아질 수 있지만 생성 시간이 증가합니다.",
+        },
+        "guidance": {
+            "help": "프롬프트 반영 강도입니다.",
+            "impact": "높을수록 프롬프트를 강하게 따르지만 과도하면 품질이 불안정할 수 있습니다.",
+            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본값을 사용합니다.",
+        },
+        "width": {
+            "help": "영상 프레임 너비(px)입니다.",
+            "impact": "커질수록 선명도와 비용이 함께 늘어납니다.",
+            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 너비를 사용합니다.",
+        },
+        "height": {
+            "help": "영상 프레임 높이(px)입니다.",
+            "impact": "커질수록 선명도와 비용이 함께 늘어납니다.",
+            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 높이를 사용합니다.",
+        },
+        "frames": {
+            "help": "생성할 프레임 수입니다.",
+            "impact": "값이 클수록 영상이 길어지고 생성 시간이 늘어납니다.",
+        },
+        "fps": {
+            "help": "저장할 mp4의 초당 프레임 수입니다.",
+            "impact": "같은 프레임 수에서 fps가 높으면 재생 시간이 짧아지고 더 빠르게 보입니다.",
+            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 fps를 사용합니다.",
+        },
+        "seed": {
+            "help": "난수 시드입니다.",
+            "impact": "-1은 매번 랜덤이며, 정수를 넣으면 유사한 결과 재현에 도움이 됩니다.",
+            "placeholder": "예: -1 또는 1234",
+        },
+    },
+    "tts-gen": {
+        "text": {
+            "help": "Piper가 음성으로 읽을 텍스트입니다.",
+            "impact": "문장이 길수록 오디오 길이와 합성 시간이 늘어납니다.",
+        },
+        "voice": {
+            "help": "사용할 Piper 보이스 이름입니다.",
+            "impact": "목소리와 언어가 바뀌며, 해당 .onnx 보이스 모델이 models에 있어야 합니다.",
+            "empty": "비워두면 tts-gen/config.yaml의 voice.name을 사용합니다.",
+            "placeholder": "예: en_US-lessac-medium",
+        },
+        "length_scale": {
+            "help": "발화 속도 계수입니다.",
+            "impact": "1보다 크면 느리게, 1보다 작으면 빠르게 말합니다.",
+            "empty": "비워두면 tts-gen/config.yaml의 synthesis.length_scale을 사용합니다.",
+        },
+        "download": {
+            "help": "체크하면 보이스 모델을 다운로드하고 합성은 하지 않습니다.",
+            "impact": "TTS/voice-agent/avatar 실행 전에 필요한 보이스 파일을 준비합니다.",
+        },
+        "cuda": {
+            "help": "체크하면 onnxruntime CUDA 실행을 요청합니다.",
+            "impact": "NVIDIA GPU와 onnxruntime-gpu가 준비된 환경에서 합성 속도가 달라질 수 있습니다.",
+        },
+    },
+    "stt-gen": {
+        "from_tts": {
+            "help": "TTS로 먼저 합성한 뒤 다시 전사할 기준 텍스트입니다.",
+            "impact": "왕복 검증에서는 이 텍스트와 전사 결과를 비교해 WER를 계산합니다.",
+        },
+        "model": {
+            "help": "faster-whisper 모델 크기입니다.",
+            "impact": "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다.",
+        },
+        "compute_type": {
+            "help": "모델 계산 정밀도/양자화 방식입니다.",
+            "impact": "int8은 CPU에서 가볍고, float16/int8_float16은 CUDA 환경에 적합합니다.",
+        },
+        "device": {
+            "help": "STT 실행 장치입니다.",
+            "impact": "auto는 가능한 장치를 고르고, cpu/cuda는 명시적으로 고정합니다.",
+        },
+    },
+    "llm-serve": {
+        "prompt": {
+            "help": "LLM에 보낼 사용자 질문 또는 지시문입니다.",
+            "impact": "응답 내용과 토큰 수, 지연 시간이 프롬프트에 따라 달라집니다.",
+        },
+        "model": {
+            "help": "OpenAI 호환 서버에 요청할 모델 이름입니다.",
+            "impact": "다른 모델을 지정하면 품질, 속도, 메모리 사용량이 달라집니다.",
+            "empty": "비워두면 llm-serve/config.yaml의 provider.model을 사용합니다.",
+            "placeholder": "예: llama3.2:1b-instruct-q4_K_M",
+        },
+        "max_tokens": {
+            "help": "생성할 최대 토큰 수입니다.",
+            "impact": "값이 클수록 긴 답변이 가능하지만 총 지연 시간이 늘 수 있습니다.",
+        },
+    },
+    "voice-agent": {
+        "ask": {
+            "help": "음성 에이전트에게 물어볼 질문 텍스트입니다.",
+            "impact": "이 텍스트를 입력 음성으로 합성한 뒤 STT, LLM, TTS 전체 지연을 측정합니다.",
+        },
+    },
+    "avatar-gen": {
+        "prompt": {
+            "help": "LLM이 말할 문장을 만들도록 줄 프롬프트입니다.",
+            "impact": "입력하면 LLM 생성 단계를 거친 뒤 그 응답을 음성/영상으로 만듭니다.",
+            "empty": "비워두면 text 값을 그대로 말하게 합니다.",
+            "placeholder": "예: Greet a new learner in one sentence.",
+        },
+        "text": {
+            "help": "아바타가 그대로 말할 텍스트입니다.",
+            "impact": "LLM을 건너뛰고 바로 TTS와 영상 합성에 사용합니다.",
+        },
+        "backend": {
+            "help": "토킹헤드 생성 방식입니다.",
+            "impact": "static은 정지 영상 검증용이고, wav2lip은 외부 모델로 실제 립싱크를 시도합니다.",
+        },
+        "device": {
+            "help": "립싱크 백엔드 실행 장치입니다.",
+            "impact": "auto는 cuda, mps, cpu 순으로 가능한 장치를 고릅니다.",
+        },
+    },
+}
+
+
+DEFAULT_EMPTY_HELP = "비워두면 이 CLI 인자를 전달하지 않고 하위 config.yaml 또는 CLI 기본값을 사용합니다."
+
+
+METRIC_HELP: dict[str, dict[str, str]] = {
+    "audio_s": {"help": "생성 또는 입력된 오디오의 길이입니다.", "direction": "작업 규모를 해석하는 기준입니다."},
+    "synth_s": {"help": "TTS 음성 합성에 걸린 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "transcribe_s": {"help": "STT 전사에 걸린 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "rtf": {"help": "처리 시간 / 오디오 길이입니다.", "direction": "1보다 작으면 실시간보다 빠릅니다."},
+    "wer": {"help": "기준 텍스트와 전사 결과의 단어 오류율입니다.", "direction": "낮을수록 정확합니다."},
+    "realtime_x": {"help": "실시간 대비 처리 배수입니다.", "direction": "높을수록 빠릅니다."},
+    "sr": {"help": "오디오 샘플레이트입니다.", "direction": "오디오 포맷 확인용입니다."},
+    "chars": {"help": "입력 텍스트 문자 수입니다.", "direction": "합성 부하를 해석하는 기준입니다."},
+    "ttft": {"help": "요청 후 첫 토큰이 나오기까지의 시간입니다.", "direction": "낮을수록 반응이 빠릅니다."},
+    "tokens": {"help": "스트리밍 중 생성된 토큰 수의 근사값입니다.", "direction": "응답 길이 해석용입니다."},
+    "decode_tok_s": {"help": "첫 토큰 이후 초당 생성한 토큰 수입니다.", "direction": "높을수록 생성 처리량이 좋습니다."},
+    "total_s": {"help": "LLM 요청 전체 완료 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "stt_ms": {"help": "음성 입력을 텍스트로 바꾸는 단계 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "llm_ttft_ms": {"help": "LLM 첫 토큰 대기 시간입니다.", "direction": "낮을수록 대화 반응성이 좋습니다."},
+    "llm_total_ms": {"help": "LLM 응답 생성 전체 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "tts_ms": {"help": "응답 텍스트를 음성으로 합성하는 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "e2e_ms": {"help": "사용자 발화 종료부터 응답 음성 생성까지의 전체 지연입니다.", "direction": "낮을수록 좋습니다."},
+    "bottleneck": {"help": "한 턴에서 가장 오래 걸린 단계입니다.", "direction": "최적화 우선순위를 보여줍니다."},
+    "bottleneck_pct": {"help": "전체 시간 중 병목 단계가 차지한 비율입니다.", "direction": "높을수록 해당 단계 영향이 큽니다."},
+    "tts_s": {"help": "아바타 파이프라인의 음성 합성 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "lipsync_s": {"help": "음성과 얼굴을 합쳐 영상으로 만드는 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "lipsync_rtf": {"help": "립싱크 시간 / 오디오 길이입니다.", "direction": "1보다 작으면 실시간보다 빠릅니다."},
+    "e2e_s": {"help": "아바타 파이프라인 전체 완료 시간입니다.", "direction": "낮을수록 빠릅니다."},
+    "backend": {"help": "사용한 실행 백엔드입니다.", "direction": "결과 비교 기준입니다."},
+    "avg_batch_size": {"help": "서버가 실제로 묶어 처리한 평균 배치 크기입니다.", "direction": "동적 배칭 효과 확인용입니다."},
+    "max_observed_batch": {"help": "관측된 최대 배치 크기입니다.", "direction": "설정한 최대 배치에 얼마나 접근했는지 보여줍니다."},
+    "total_batches": {"help": "서버가 처리한 총 배치 수입니다.", "direction": "벤치마크 규모 확인용입니다."},
+}
+
+
 def target_dir(target: str) -> Path:
     return ROOT / TARGETS[target]["dir"]
 
@@ -510,6 +737,8 @@ def _label_metrics(target: str, metrics: dict[str, Any]) -> dict[str, Any]:
             "label": labels.get(key, key),
             "value": metrics[key],
             "unit": units.get(key, ""),
+            "help": METRIC_HELP.get(key, {}).get("help", ""),
+            "direction": METRIC_HELP.get(key, {}).get("direction", ""),
         }
         for key in order
         if key in metrics
@@ -747,22 +976,35 @@ async def health():
         "root": str(ROOT),
         "targets": [
             {"id": t, "label": meta["label"], "kind": meta["kind"],
-             "params": _param_view(meta["params"]),
+             "params": _param_view(t, meta["params"]),
              "produces_files": meta["produces_files"]}
             for t, meta in TARGETS.items()
         ],
     }
 
 
-def _param_view(params: dict) -> list[dict]:
+def _param_view(target: str, params: dict) -> list[dict]:
     out = []
     for name, p in params.items():
-        out.append({
+        view = {
             "name": name, "type": p["type"],
             "choices": p.get("choices"),
             "required": bool(p.get("required")),
             "default": p.get("default"),
+            "min": p.get("min"),
+            "max": p.get("max"),
+        }
+        meta = PARAM_HELP.get(target, {}).get(name, {})
+        empty_help = meta.get("empty", "" if p.get("required") else DEFAULT_EMPTY_HELP)
+        if p["type"] == "bool" and "empty" not in meta:
+            empty_help = "체크하지 않으면 이 플래그를 전달하지 않습니다."
+        view.update({
+            "help": meta.get("help", ""),
+            "impact": meta.get("impact", ""),
+            "empty": empty_help,
+            "placeholder": meta.get("placeholder", ""),
         })
+        out.append(view)
     return out
 
 

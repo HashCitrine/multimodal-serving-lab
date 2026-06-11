@@ -33,7 +33,12 @@
   .hints { font-size:12px; color:var(--warn); margin:0; padding-left:16px; }
   .hints li { margin:2px 0; }
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  label { font-size:12px; color:var(--mut); display:flex; flex-direction:column; gap:3px; }
+  label { font-size:12px; color:var(--mut); display:flex; flex-direction:column; gap:3px; min-width:0; }
+  label.field { flex:1 1 150px; }
+  .field-name { color:var(--mut); font-size:12px; }
+  .field-help { color:#c3cad6; font-size:11px; line-height:1.35; max-width:100%; overflow-wrap:anywhere; }
+  .field-impact, .field-empty, .field-meta { color:var(--mut); font-size:11px; line-height:1.35; max-width:100%; overflow-wrap:anywhere; }
+  .field-empty { color:#b8a96f; }
   input, select, textarea { background:#0d0f14; color:var(--fg); border:1px solid var(--line);
           border-radius:6px; padding:6px 8px; font:inherit; }
   input[type=file] { max-width:100%; }
@@ -66,6 +71,8 @@
   .metric { border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:#0d0f14; min-width:0; }
   .metric .k { color:var(--mut); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .metric .v { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
+  .metric .d { color:var(--mut); font-size:11px; line-height:1.35; margin-top:3px; overflow-wrap:anywhere; }
+  .metric-note { color:var(--mut); font-size:11px; line-height:1.4; margin:0; }
   table.metric-table { width:100%; border-collapse:collapse; font-size:12px; }
   .metric-table th, .metric-table td { border-top:1px solid var(--line); padding:5px 6px; text-align:right; }
   .metric-table th:first-child, .metric-table td:first-child { text-align:left; }
@@ -84,8 +91,12 @@
 const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const ext = n => (n.split('.').pop() || '').toLowerCase();
 const desc = {
+  'serve': '학습용 serving spine을 켜고 /infer 동작과 동시성 벤치마크를 확인합니다.',
+  'sd-gen': 'Stable Diffusion 이미지 생성을 실행하고 prompt, seed, 해상도, step 변화의 영향을 확인합니다.',
+  'video-gen': 'AnimateDiff 또는 Zeroscope로 짧은 비디오를 생성하고 프레임 수, fps, 해상도 설정을 조정합니다.',
   'tts-gen': '텍스트를 Piper 음성으로 합성하고 wav 파일을 생성합니다. 실행 완료 후 브라우저에서 재생을 시도합니다.',
   'stt-gen': '실제 음성 입력 전사와 TTS로 만든 음성을 다시 받아쓰는 왕복 검증을 분리해 실행합니다.',
+  'llm-serve': 'OpenAI 호환 LLM endpoint로 프롬프트를 보내고 첫 토큰 지연과 생성 처리량을 확인합니다.',
   'voice-agent': '질문 텍스트를 입력 음성으로 합성한 뒤 STT, LLM, TTS를 한 턴으로 연결합니다. 응답 음성을 우선 재생합니다.',
   'avatar-gen': '정지 영상 검증(static)과 실제 립싱크(wav2lip)를 분리해 실행합니다.'
 };
@@ -94,20 +105,66 @@ async function jget(u){ const r = await fetch(u); return r.json(); }
 async function jpost(u, body){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }
 async function jpostForm(u, body){ const r = await fetch(u,{method:'POST',body}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }
 
+function paramMetaText(p){
+  const parts = [];
+  if (p.choices && p.choices.length) parts.push('허용값: ' + p.choices.join(', '));
+  if (p.min != null || p.max != null){
+    const lo = p.min != null ? p.min : '';
+    const hi = p.max != null ? p.max : '';
+    parts.push(`범위: ${lo}~${hi}`);
+  }
+  if (p.default != null) parts.push('기본값: ' + p.default);
+  else parts.push('기본값: 비어 있음');
+  return parts.join(' · ');
+}
+
+function appendParamHelp(wrap, p){
+  const meta = paramMetaText(p);
+  if (p.help) wrap.append($('span','field-help',p.help));
+  if (p.impact) wrap.append($('span','field-impact','영향: ' + p.impact));
+  if (meta) wrap.append($('span','field-meta',meta));
+  if (p.empty) wrap.append($('span','field-empty','빈 값: ' + p.empty));
+}
+
+function fieldLabel(p){
+  const wrap = $('label','field');
+  wrap.append($('span','field-name',p.name + (p.required?' *':'')));
+  return wrap;
+}
+
 function paramInput(p){
-  const wrap = $('label'); wrap.append($('span', null, p.name + (p.required?' *':'')));
+  const wrap = fieldLabel(p);
   let el;
   if (p.type === 'bool'){ el = $('input'); el.type='checkbox'; if (p.default) el.checked = true; }
   else if (p.type === 'choice'){ el = $('select');
-    el.append(new Option('(기본값)','')); p.choices.forEach(c=>el.append(new Option(c,c)));
+    const defaultLabel = p.default != null ? `(기본값: ${p.default})` : '(기본값)';
+    el.append(new Option(defaultLabel,''));
+    p.choices.forEach(c=>el.append(new Option(c,c)));
     if (p.default != null) el.value = p.default; }
   else if (p.type === 'int' || p.type === 'float'){ el = $('input'); el.type='number';
-    if (p.type==='float') el.step='0.1'; if (p.default != null) el.value = p.default; }
-  else if (p.type === 'intlist'){ el = $('input'); el.placeholder='예: 1 2 4 8';
+    if (p.type==='float') el.step='0.1';
+    if (p.min != null) el.min = p.min;
+    if (p.max != null) el.max = p.max;
+    if (p.default != null) el.value = p.default;
+    if (p.placeholder) el.placeholder = p.placeholder; }
+  else if (p.type === 'intlist'){ el = $('input'); el.placeholder=p.placeholder || '예: 1 2 4 8';
     if (p.default != null) el.value = p.default; }
-  else { el = $('input'); el.type='text'; if (p.default != null) el.value = p.default; }
+  else { el = $('input'); el.type='text'; if (p.default != null) el.value = p.default; if (p.placeholder) el.placeholder = p.placeholder; }
   el.dataset.pname = p.name; el.dataset.ptype = p.type;
-  wrap.append(el); return wrap;
+  wrap.append(el); appendParamHelp(wrap, p); return wrap;
+}
+
+function textareaParam(p){
+  const w = fieldLabel(p);
+  w.style.flex = '1 1 100%';
+  const ta = $('textarea');
+  ta.dataset.pname = p.name;
+  ta.dataset.ptype = p.type;
+  ta.value = p.default ?? '';
+  if (p.placeholder) ta.placeholder = p.placeholder;
+  w.append(ta);
+  appendParamHelp(w, p);
+  return w;
 }
 
 function collectParams(card){
@@ -206,11 +263,14 @@ function renderMetrics(box, metrics, rows){
       item.append($('div','k',m.label));
       const value = m.unit ? `${formatMetricValue(m.value)} ${m.unit}` : formatMetricValue(m.value);
       item.append($('div','v',value));
+      const detail = [m.help, m.direction].filter(Boolean).join(' ');
+      if (detail) item.append($('div','d',detail));
       grid.append(item);
     });
     box.append(grid);
   }
   if (hasRows){
+    box.append($('p','metric-note','벤치마크 표: 동시성은 동시에 보낸 요청 수, 요청은 총 요청 수, wall은 전체 완료 시간, rps는 초당 처리량입니다. p50/p95/p99는 요청 지연 분포이며 낮을수록 좋고 p95/p99는 꼬리 지연을 보여줍니다.'));
     const table = $('table','metric-table');
     const headers = ['concurrency','requests','wall_s','rps','p50_ms','p95_ms','p99_ms'];
     const head = $('tr');
@@ -283,8 +343,7 @@ function makeCard(t, tabDot){
     const form = $('div','row');
     t.params.forEach(p=>{
       if (p.type === 'str' && (p.name==='prompt'||p.name==='text'||p.name==='ask'||p.name==='payload')){
-        const w = $('label'); w.style.flex='1 1 100%'; w.append($('span',null,p.name+(p.required?' *':'')));
-        const ta = $('textarea'); ta.dataset.pname=p.name; ta.dataset.ptype=p.type; ta.value = p.default ?? ''; w.append(ta); form.append(w);
+        form.append(textareaParam(p));
       } else form.append(paramInput(p));
     });
     card.append(form);
@@ -366,8 +425,10 @@ function buildSttCard(card, t, statusEl, logEl, metricBox){
   const round = $('div','section');
   round.append($('h3', null, 'TTS→STT 왕복 검증'));
   round.append($('p','note','입력 텍스트를 먼저 음성으로 합성한 뒤 그 음성을 다시 전사해 WER를 계산합니다.'));
-  const w = $('label'); w.style.flex='1 1 100%'; w.append($('span', null, 'from_tts'));
-  const ta = $('textarea'); ta.value = t.params.find(p=>p.name === 'from_tts').default; w.append(ta);
+  const fromTts = t.params.find(p=>p.name === 'from_tts');
+  const w = fieldLabel(fromTts); w.style.flex='1 1 100%';
+  const ta = $('textarea'); ta.value = fromTts.default; if (fromTts.placeholder) ta.placeholder = fromTts.placeholder;
+  w.append(ta); appendParamHelp(w, fromTts);
   const roundBtn = $('button', null, '왕복 실행');
   roundBtn.onclick = async ()=>{
     const params = collectParams(modelRow); params.from_tts = ta.value.trim();
@@ -460,8 +521,7 @@ function buildAvatarCard(card, t, statusEl, logEl, metricBox, artBox){
     ['text','prompt','device'].forEach(name=>{
       const p = t.params.find(x=>x.name === name);
       if (p.type === 'str'){
-        const w = $('label'); w.style.flex='1 1 100%'; w.append($('span', null, name));
-        const ta = $('textarea'); ta.dataset.pname=name; ta.dataset.ptype='str'; ta.value = p.default ?? ''; w.append(ta); box.append(w);
+        box.append(textareaParam(p));
       } else box.append(paramInput(p));
     });
     return box;

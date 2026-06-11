@@ -3,6 +3,15 @@
 `multimodal-serving-lab`의 실험 구성, 서브 프로젝트별 로직 흐름, 실험 판단 기준을 정리한다.
 용어 설명은 [`glossary.md`](glossary.md), 실제 수치는 [`experiments.md`](experiments.md)를 참고한다.
 
+## 문서 책임
+
+| 문서 | 책임 |
+|---|---|
+| `project-flow.md` | 현재 문서. 전체 Phase와 서브 프로젝트별 구현 흐름을 설명 |
+| `glossary.md` | 이 문서에서 사용하는 용어를 독립적인 사전 형태로 설명 |
+| `experiments.md` | 실험 수치, 관찰 결과, 한계와 결론을 기록 |
+| 각 디렉터리 `README.md` | 설치, 실행 명령, 개별 프로젝트별 상세 사용법 |
+
 ## 1. 프로젝트 개요
 
 | 항목 | 내용 |

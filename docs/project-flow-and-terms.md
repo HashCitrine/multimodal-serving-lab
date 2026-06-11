@@ -3,11 +3,23 @@
 이 문서는 `multimodal-serving-lab`의 상위 안내 페이지다. 용어 설명과 프로젝트 흐름을 한 파일에 모두
 넣으면 문서가 길어지고 목적이 섞이므로, 아래처럼 두 문서로 나눠 읽는다.
 
+## 현재 문서 구성
+
 | 문서 | 목적 | 먼저 읽을 상황 |
 |---|---|---|
 | [`project-flow.md`](project-flow.md) | 전체 실험 흐름, 서브 프로젝트별 로직 흐름, 실험 판단 기준 | 저장소 구조와 코드 흐름을 이해하고 싶을 때 |
 | [`glossary.md`](glossary.md) | 멀티모달/서빙/최적화 용어 사전 | RTF, TTFT, dynamic batching 같은 용어를 확인하고 싶을 때 |
 | [`experiments.md`](experiments.md) | 실제 실험 수치와 관찰 기록 | 결과 수치와 결론 근거를 확인하고 싶을 때 |
+
+## 이번 문서 정리에서 반영한 내용
+
+| 변경 | 반영 위치 |
+|---|---|
+| 프로젝트 흐름과 용어 설명을 분리 | `project-flow.md`, `glossary.md` |
+| 서브 프로젝트별 흐름을 표와 단계형 블록으로 재구성 | `project-flow.md` |
+| 용어 설명을 검색 가능한 사전 형태로 정리 | `glossary.md` |
+| 기존 통합 문서는 문서 안내 페이지로 축소 | `project-flow-and-terms.md` |
+| 실측 수치와 관찰 기록은 기존 실험 문서에 유지 | `experiments.md` |
 
 ## 추천 읽기 순서
 

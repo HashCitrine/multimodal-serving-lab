@@ -16,41 +16,60 @@
 - `llm-serve/`: LLM 서빙·양자화 최적화 — 로컬 Ollama(OpenAI 호환)↔클라우드 vLLM 전환 구조, 양자화/배칭 벤치
 - `voice-agent/`: STT→LLM→TTS 음성 에이전트 — 대화 턴 end-to-end 지연 예산 측정(병목: warm=STT, cold=LLM)
 - `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형
+- `lab-ui/`: 위 실험들을 브라우저에서 실행·확인하는 랩 대시보드(FastAPI) — 각 CLI를 allowlist 인자로 subprocess 실행, preflight로 준비 상태 안내
 - `docs/project-flow-and-terms.md`: 흐름·용어·실험 기록 문서 안내
 - `docs/project-flow.md`: 전체 실험 흐름·서브 프로젝트별 로직 해설
 - `docs/glossary.md`: 멀티모달·서빙·최적화 핵심 용어 사전
 - `docs/experiments.md`: 시도한 내용·결과·한계, 벤치 수치 기록
 
+## 의존성 관리 (uv)
+
+모든 서브 프로젝트는 [uv](https://astral.sh/uv) 기반입니다(각 디렉터리에 `pyproject.toml` + `.python-version`). 준비는 한 줄:
+
+```bash
+cd <서브프로젝트>
+uv sync            # .venv 생성 + 의존성 설치 (Python 3.11 은 uv 가 자동 확보)
+uv run python <script> ...
+```
+
+`uv sync` 없이 `uv run` 으로 바로 실행해도 첫 회에 자동으로 동기화됩니다. GPU(NVIDIA) 사용자는 `uv sync --extra gpu`(sd-gen·tts-gen).
+
 ## 실행 환경 (device 이식성)
 모든 서브 프로젝트는 **device 파라미터화**(Apple Silicon/MPS·CPU 기본, NVIDIA/CUDA 전환 가능):
-- TTS(Piper): `--cuda` 또는 `PIPER_CUDA=1` + `onnxruntime-gpu`
+- TTS(Piper): `--cuda` 또는 `PIPER_CUDA=1` + `uv sync --extra gpu`(onnxruntime-gpu)
 - STT(faster-whisper): `device: auto|cuda` (GPU는 `compute_type: float16|int8_float16`)
 - LLM: OpenAI 호환 `base_url` 교체(로컬 Ollama ↔ 클라우드 vLLM)
 - avatar: `device: auto`(cuda→mps→cpu) 자동 감지
 
 ## 실행 예시
 
-각 디렉터리에 별도의 `README.md`와 `requirements.txt`가 있습니다.
-
 이미지 생성:
 
 ```bash
 cd sd-gen
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python generate.py -p "a cinematic mountain landscape at sunset"
+uv sync
+uv run python generate.py -p "a cinematic mountain landscape at sunset"
 ```
 
 비디오 생성:
 
 ```bash
 cd video-gen
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python generate.py -p "a cat walking in a garden"
+uv sync
+uv run python generate.py -p "a cat walking in a garden"
 ```
+
+전체 테스트 대시보드 (lab-ui):
+
+```bash
+cd lab-ui
+uv run python app.py
+# http://127.0.0.1:7860
+```
+
+- 카드별로 serve/이미지/비디오/TTS/STT/LLM/voice-agent/avatar 실행 폼을 제공하고, 로그·산출물을 보여줍니다.
+- 각 카드는 `uv run`으로 해당 서브 프로젝트를 실행합니다. 첫 실행 시 uv가 그 디렉터리의 `.venv`를 자동 동기화하므로 별도 준비가 필요 없습니다(무거운 타깃은 첫 회 설치에 시간이 걸립니다).
+- 무거운 모델/런타임(모델 다운로드, Ollama, ffmpeg)은 자동 설치하지 않습니다. 각 카드의 preflight 배지가 준비 상태(uv·동기화·외부 런타임)와 다음에 할 일을 안내합니다.
 
 ## 정리
 

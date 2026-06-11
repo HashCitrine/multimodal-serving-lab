@@ -1,0 +1,21 @@
+[project]
+name = "sd-gen"
+version = "0.1.0"
+description = "Stable Diffusion 기반 이미지 생성"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "diffusers>=0.27.0",
+    "transformers>=4.38.0",
+    "accelerate>=0.27.0",
+    "PyYAML>=6.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+# NVIDIA GPU 메모리 최적화: uv sync --extra gpu
+# xformers는 CUDA(Linux) 전용 — macOS/기타 플랫폼에서는 marker로 자동 제외돼 sync가 깨지지 않는다.
+gpu = ["xformers>=0.0.24; platform_system == 'Linux'"]
+
+[tool.uv]
+package = false

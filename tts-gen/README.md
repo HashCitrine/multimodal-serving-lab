@@ -11,17 +11,17 @@ tts-gen/
 ├── bento_service.py  # BentoML 서비스 (@bentoml.service): /synthesize, /synthesize_meta
 ├── bentofile.yaml    # bentoml build → containerize (Docker)
 ├── config.yaml
-└── requirements.txt
+└── pyproject.toml
 ```
 같은 모델을 직접 구현 baseline 서버로도 서빙: `../serve/config.piper.yaml`
 (어댑터 `../serve/adapters/piper_tts.py`).
 
 ## 빠른 시작
 ```bash
-pip install -r requirements.txt
-python synthesize.py --download                  # 보이스 1회 다운로드(en_US-lessac-medium, ~63MB)
-python synthesize.py -t "hello world"            # outputs/ 에 wav + RTF 출력
-python bench_rtf.py --runs 5                      # 길이별 RTF
+uv sync                                          # NVIDIA GPU: uv sync --extra gpu
+uv run python synthesize.py --download           # 보이스 1회 다운로드(en_US-lessac-medium, ~63MB)
+uv run python synthesize.py -t "hello world"     # outputs/ 에 wav + RTF 출력
+uv run python bench_rtf.py --runs 5              # 길이별 RTF
 
 # BentoML 서빙
 bentoml serve bento_service:PiperTTS             # http://127.0.0.1:3000 (/healthz)
@@ -30,7 +30,7 @@ curl -s -X POST localhost:3000/synthesize -H 'Content-Type: application/json' \
 # Docker 이미지: bentoml build && bentoml containerize piper-tts:latest
 
 # 서빙 비교 (동시성 sweep)
-python ../serve/bench.py --url http://127.0.0.1:3000 --path /synthesize_meta --field text
+uv run python ../serve/bench.py --url http://127.0.0.1:3000 --path /synthesize_meta --field text
 ```
 
 ## 측정 결과 (Apple Silicon 18코어, CPU/onnxruntime) — 자세히는 `../docs/experiments.md`
@@ -48,7 +48,7 @@ python ../serve/bench.py --url http://127.0.0.1:3000 --path /synthesize_meta --f
 # A 기본 / D 제한+복제 비교
 BENTO_WORKERS=1               bentoml serve bento_service:PiperTTS --port 3000   # ~12 rps
 BENTO_WORKERS=8 ORT_INTRA_OP=2 bentoml serve bento_service:PiperTTS --port 3000  # ~25 rps
-python ../serve/bench.py --url http://127.0.0.1:3000 --path /synthesize_meta --field text --concurrency 8 --requests 64
+uv run python ../serve/bench.py --url http://127.0.0.1:3000 --path /synthesize_meta --field text --concurrency 8 --requests 64
 ```
 
 ## 다음 최적화(선택)

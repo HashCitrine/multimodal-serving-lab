@@ -1,0 +1,17 @@
+[project]
+name = "avatar-gen"
+version = "0.1.0"
+description = "토킹헤드·립싱크 아바타 파이프라인 (text→LLM→TTS→lip-sync)"
+requires-python = ">=3.10"
+# ffmpeg: 시스템 설치 필요(static 백엔드). brew install ffmpeg / apt install ffmpeg
+# 립싱크 모델(Wav2Lip/SadTalker 등)은 외부 git/체크포인트로 별도 설치(README 참고).
+dependencies = [
+    "openai>=1.30",  # LLM (OpenAI 호환 provider)
+    "piper-tts>=1.3",  # TTS
+    "numpy>=1.24",
+    "Pillow>=10.0",  # placeholder 얼굴 생성
+    "PyYAML>=6.0",
+]
+
+[tool.uv]
+package = false

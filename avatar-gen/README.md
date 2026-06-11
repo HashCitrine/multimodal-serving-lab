@@ -7,8 +7,8 @@
 ## 빠른 시작
 
 ```bash
-pip install -r requirements.txt          # + 시스템 ffmpeg
-python pipeline.py --text "Hello, I am your tutor." --backend static
+uv sync                                  # + 시스템 ffmpeg (brew install ffmpeg / apt install ffmpeg)
+uv run python pipeline.py --text "Hello, I am your tutor." --backend static
 ```
 
 실제 립싱크는 외부 Wav2Lip 환경을 준비한 뒤 실행한다.
@@ -16,7 +16,7 @@ python pipeline.py --text "Hello, I am your tutor." --backend static
 ```bash
 export WAV2LIP_DIR=/path/to/Wav2Lip
 export WAV2LIP_CKPT=/path/to/Wav2Lip/checkpoints/wav2lip_gan.pth
-python pipeline.py --text "Hello, I am your tutor." --face /path/to/face.jpg --backend wav2lip --device cuda
+uv run python pipeline.py --text "Hello, I am your tutor." --face /path/to/face.jpg --backend wav2lip --device cuda
 ```
 
 ## Wav2Lip 준비
@@ -47,8 +47,8 @@ python inference.py \
 `bench_avatar.py`는 같은 입력으로 audio length, TTS latency, lip-sync latency, lip-sync RTF, end-to-end latency, NVIDIA GPU peak memory를 측정한다.
 
 ```bash
-python bench_avatar.py --backend static --runs 3
-python bench_avatar.py --backend wav2lip --face /path/to/face.jpg --device cuda --runs 3 --gpu-id 0
+uv run python bench_avatar.py --backend static --runs 3
+uv run python bench_avatar.py --backend wav2lip --face /path/to/face.jpg --device cuda --runs 3 --gpu-id 0
 ```
 
 결과 mp4/wav는 `outputs/`에 생성되며 Git에 포함하지 않는다.
@@ -60,7 +60,7 @@ avatar-gen/
 ├── pipeline.py        # text→LLM→TTS→lipsync, 단계별 latency 출력
 ├── bench_avatar.py    # static/Wav2Lip backend latency·RTF·GPU memory 벤치
 ├── config.yaml        # llm/tts/lipsync backend 설정
-├── requirements.txt
+├── pyproject.toml
 └── backends/
     ├── base.py        # LipSyncBackend 인터페이스
     ├── static.py      # ffmpeg 정지영상 폴백

@@ -1,0 +1,15 @@
+[project]
+name = "serve"
+version = "0.1.0"
+description = "서빙 내부 원리 학습용 baseline + 벤치마크 하니스"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pydantic>=2.0",
+    "PyYAML>=6.0",
+    "httpx>=0.27",       # bench.py 클라이언트
+]
+
+[tool.uv]
+package = false

@@ -11,15 +11,15 @@ voice-agent/
 ├── agent.py          # 한 턴 실행 + 단계별 지연 예산 출력
 ├── bench_latency.py  # 여러 질문 정상상태 중앙값(병목 안정 측정)
 ├── config.yaml       # stt / llm(provider) / tts 설정
-└── requirements.txt
+└── pyproject.toml
 ```
 
 ## 실행
 ```bash
-pip install -r requirements.txt           # + 앞선 서빙 실험 모델(Piper 보이스, Ollama LLM, whisper)
-python agent.py --ask "How do you spell necessary?"
-python agent.py --audio question.wav
-python bench_latency.py
+uv sync                                   # + 앞선 서빙 실험 모델(Piper 보이스, Ollama LLM, whisper)
+uv run python agent.py --ask "How do you spell necessary?"
+uv run python agent.py --audio question.wav
+uv run python bench_latency.py
 ```
 
 ## 측정 결과 (M5 Max, 로컬, base.en + llama3.2:1b-q4 + Piper)

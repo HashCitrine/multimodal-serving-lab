@@ -1,0 +1,16 @@
+[project]
+name = "voice-agent"
+version = "0.1.0"
+description = "STT→LLM→TTS 음성 에이전트 (대화 턴 지연 예산 측정)"
+requires-python = ">=3.10"
+# 로컬 LLM 백엔드: Ollama 데몬(`ollama serve`) 필요. 앞선 서빙 실험 자산 재사용.
+dependencies = [
+    "faster-whisper>=1.0",  # STT
+    "openai>=1.30",         # LLM (OpenAI 호환 provider)
+    "piper-tts>=1.3",       # TTS
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+]
+
+[tool.uv]
+package = false

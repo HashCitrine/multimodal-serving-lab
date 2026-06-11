@@ -17,18 +17,18 @@ llm-serve/
 ├── quant_sweep.py  # Q4/Q8/FP16 양자화 → tok/s·메모리·디스크·품질(vs fp16)
 ├── bench_llm.py    # 동시성 sweep → 집계 throughput·TTFT (vLLM에도 그대로 사용)
 ├── config.yaml     # provider(base_url/model) + 양자화 태그
-└── requirements.txt
+└── pyproject.toml
 ```
 로컬 백엔드: `ollama serve` + `ollama pull llama3.2:1b-instruct-q4_K_M` 등.
 
 ## 빠른 시작
 ```bash
-pip install -r requirements.txt
+uv sync
 ollama pull llama3.2:1b-instruct-q4_K_M    # (q8_0, fp16 도 동일 패턴)
-python chat.py -p "Explain MLOps in one sentence."
-python quant_sweep.py
-python bench_llm.py --concurrency 1 2 4 8
-# 클라우드 전환: python bench_llm.py --base-url http://<vllm>:8000/v1 --model meta-llama/Llama-3.2-1B-Instruct
+uv run python chat.py -p "Explain MLOps in one sentence."
+uv run python quant_sweep.py
+uv run python bench_llm.py --concurrency 1 2 4 8
+# 클라우드 전환: uv run python bench_llm.py --base-url http://<vllm>:8000/v1 --model meta-llama/Llama-3.2-1B-Instruct
 ```
 
 ## 측정 결과 (M5 Max, 로컬 Ollama, llama3.2:1b) — 자세히는 `../docs/experiments.md`

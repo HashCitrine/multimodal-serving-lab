@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>multimodal-serving-lab · lab-ui</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --line:#2a2f3a; --fg:#e6e8ee; --mut:#9aa3b2;
+          --ok:#3fb950; --warn:#d29922; --bad:#f85149; --accent:#388bfd; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex;
+           align-items:baseline; gap:14px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .root { color:var(--mut); font-size:12px; }
+  main { display:grid; gap:16px; padding:20px 24px;
+         grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+  .card h2 { font-size:15px; margin:0; display:flex; align-items:center; gap:8px; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); }
+  .badge.ready { color:var(--ok); border-color:var(--ok); }
+  .badge.needs_setup { color:var(--warn); border-color:var(--warn); }
+  .badge.unknown { color:var(--mut); }
+  .hints { font-size:12px; color:var(--warn); margin:0; padding-left:16px; }
+  .hints li { margin:2px 0; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  label { font-size:12px; color:var(--mut); display:flex; flex-direction:column; gap:3px; }
+  input, select, textarea { background:#0d0f14; color:var(--fg); border:1px solid var(--line);
+          border-radius:6px; padding:6px 8px; font:inherit; }
+  input[type=number] { width:90px; } input[type=checkbox] { width:auto; }
+  textarea { width:100%; min-height:46px; resize:vertical; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:6px;
+           padding:7px 12px; font:inherit; cursor:pointer; }
+  button.sec { background:#262b36; color:var(--fg); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .status { font-size:12px; color:var(--mut); }
+  .status.running { color:var(--accent); } .status.succeeded { color:var(--ok); }
+  .status.failed { color:var(--bad); }
+  pre.log { background:#0a0c10; border:1px solid var(--line); border-radius:6px; margin:0;
+            padding:8px; font-size:11px; max-height:180px; overflow:auto; white-space:pre-wrap;
+            word-break:break-word; display:none; }
+  .artifacts { display:flex; flex-direction:column; gap:6px; }
+  .artifacts img, .artifacts video { max-width:100%; border-radius:6px; border:1px solid var(--line); }
+  .artifacts a { color:var(--accent); font-size:12px; }
+  .muted { color:var(--mut); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>multimodal-serving-lab · lab-ui</h1>
+  <span class="root" id="root">…</span>
+  <span class="muted">동시 실행 1개 · 무거운 모델/런타임은 자동 설치하지 않습니다</span>
+</header>
+<main id="cards"></main>
+
+<script>
+const $ = (t, cls, txt) => { const e = document.createElement(t); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+const ext = n => (n.split('.').pop() || '').toLowerCase();
+
+async function jget(u){ const r = await fetch(u); return r.json(); }
+async function jpost(u, body){ const r = await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})}); return {ok:r.ok, status:r.status, data:await r.json().catch(()=>({}))}; }
+
+function paramInput(p){
+  const wrap = $('label'); wrap.append($('span', null, p.name + (p.required?' *':'')));
+  let el;
+  if (p.type === 'bool'){ el = $('input'); el.type='checkbox'; }
+  else if (p.type === 'choice'){ el = $('select');
+    el.append(new Option('(기본값)','')); p.choices.forEach(c=>el.append(new Option(c,c))); }
+  else if (p.type === 'int' || p.type === 'float'){ el = $('input'); el.type='number';
+    if (p.type==='float') el.step='0.1'; }
+  else if (p.type === 'intlist'){ el = $('input'); el.placeholder='예: 1 2 4 8'; }
+  else { el = $('input'); el.type='text'; }
+  el.dataset.pname = p.name; el.dataset.ptype = p.type;
+  wrap.append(el); return wrap;
+}
+
+function collectParams(card){
+  const out = {};
+  card.querySelectorAll('[data-pname]').forEach(el=>{
+    const n = el.dataset.pname, t = el.dataset.ptype;
+    if (t === 'bool'){ if (el.checked) out[n] = true; return; }
+    const v = el.value.trim(); if (v === '') return;
+    out[n] = v;
+  });
+  return out;
+}
+
+function renderArtifacts(box, target, arts){
+  box.innerHTML = '';
+  if (!arts || !arts.length){ return; }
+  // 가장 최근 산출물 1개를 미리보기 + 전체 링크
+  const top = arts[0]; const url = `/api/artifacts/${target}/${encodeURIComponent(top.name)}`;
+  const e = ext(top.name);
+  if (['png','jpg','jpeg','webp'].includes(e)){ const i=$('img'); i.src=url; box.append(i); }
+  else if (e === 'mp4'){ const v=$('video'); v.src=url; v.controls=true; box.append(v); }
+  else if (['wav','mp3','ogg'].includes(e)){ const a=document.createElement('audio'); a.src=url; a.controls=true; box.append(a); }
+  arts.slice(0,6).forEach(a=>{
+    const link = $('a', null, `${a.name} (${(a.size/1024).toFixed(0)} KB)`);
+    link.href = `/api/artifacts/${target}/${encodeURIComponent(a.name)}`; link.target='_blank';
+    box.append(link);
+  });
+}
+
+let pollTimer = {};
+function pollJob(jobId, card, statusEl, logEl, artBox, target){
+  clearInterval(pollTimer[target]);
+  pollTimer[target] = setInterval(async ()=>{
+    const j = await jget(`/api/jobs/${jobId}`);
+    statusEl.textContent = `상태: ${j.status}` + (j.returncode!=null?` (code ${j.returncode})`:'');
+    statusEl.className = 'status ' + j.status;
+    logEl.style.display = 'block'; logEl.textContent = j.log.join('\n'); logEl.scrollTop = logEl.scrollHeight;
+    if (artBox) renderArtifacts(artBox, target, j.artifacts);
+    if (j.status === 'succeeded' || j.status === 'failed') clearInterval(pollTimer[target]);
+  }, 1000);
+}
+
+function makeCard(t){
+  const card = $('div','card'); card.dataset.target = t.id;
+  const h = $('h2', null, t.label);
+  const badge = $('span','badge unknown','…'); h.append(badge);
+  card.append(h);
+  const hints = $('ul','hints'); hints.style.display='none'; card.append(hints);
+
+  // preflight
+  jget(`/api/preflight/${t.id}`).then(pf=>{
+    badge.textContent = pf.status === 'ready' ? 'ready' : 'needs setup';
+    badge.className = 'badge ' + pf.status;
+    const bad = pf.checks.filter(c=>!c.ok && c.hint);
+    if (bad.length){ hints.style.display='block'; bad.forEach(c=>hints.append($('li',null,`${c.name}: ${c.hint}`))); }
+  }).catch(()=>{ badge.textContent='preflight 실패'; });
+
+  const statusEl = $('div','status',''); const logEl = $('pre','log');
+  const artBox = $('div','artifacts');
+
+  if (t.id === 'serve'){
+    buildServeCard(card, t, statusEl, logEl);
+  } else {
+    // 일반 파라미터 폼
+    const form = $('div','row');
+    t.params.forEach(p=>{
+      if (p.type === 'str' && (p.name==='prompt'||p.name==='text'||p.name==='ask'||p.name==='payload')){
+        const w = $('label'); w.style.flex='1 1 100%'; w.append($('span',null,p.name+(p.required?' *':'')));
+        const ta = $('textarea'); ta.dataset.pname=p.name; ta.dataset.ptype=p.type; w.append(ta); form.append(w);
+      } else form.append(paramInput(p));
+    });
+    card.append(form);
+    const run = $('button', null, '실행');
+    run.onclick = async ()=>{
+      run.disabled = true; statusEl.textContent='제출 중…'; statusEl.className='status';
+      const res = await jpost(`/api/jobs/${t.id}`, {params: collectParams(card)});
+      run.disabled = false;
+      if (!res.ok){ statusEl.textContent = '오류: ' + (res.data.detail||res.status); statusEl.className='status failed'; return; }
+      pollJob(res.data.job_id, card, statusEl, logEl, t.produces_files?artBox:null, t.id);
+    };
+    card.append($('div','row')).append(run);
+    card.append(statusEl); card.append(logEl);
+    if (t.produces_files) card.append(artBox);
+  }
+  return card;
+}
+
+function buildServeCard(card, t, statusEl, logEl){
+  const ctl = $('div','row');
+  const start = $('button', null, '서버 start');
+  const stop = $('button sec','sec'); stop.textContent='stop';
+  const health = $('button sec','sec'); health.textContent='/health';
+  const metrics = $('button sec','sec'); metrics.textContent='/metrics';
+  ctl.append(start, stop, health, metrics); card.append(ctl);
+
+  const out = $('pre','log'); out.style.display='block'; out.textContent='(서버 미기동)';
+  const refresh = async ()=>{ const s = await jget('/api/serve/status');
+    statusEl.textContent = s.running ? `running · ${s.url}` : '정지됨';
+    statusEl.className = 'status ' + (s.running?'succeeded':''); };
+  start.onclick = async ()=>{ await jpost('/api/serve/start'); setTimeout(refresh,600); };
+  stop.onclick = async ()=>{ await jpost('/api/serve/stop'); refresh(); };
+  health.onclick = async ()=>{ out.textContent = JSON.stringify((await jget('/api/serve/proxy/health')),null,2); };
+  metrics.onclick = async ()=>{ out.textContent = JSON.stringify((await jget('/api/serve/proxy/metrics')),null,2); };
+
+  // /infer 테스트
+  const inferRow = $('div','row');
+  const inp = $('input'); inp.type='text'; inp.placeholder='infer input (예: hello)'; inp.value='hello serving spine';
+  inp.style.flex='1';
+  const inferBtn = $('button', null, '/infer');
+  inferBtn.onclick = async ()=>{ const r = await jpost('/api/serve/proxy/infer',{input:inp.value});
+    out.textContent = JSON.stringify(r.data,null,2); };
+  inferRow.append(inp, inferBtn); card.append(inferRow);
+
+  // bench job
+  const benchRow = $('div','row');
+  t.params.forEach(p=>benchRow.append(paramInput(p)));
+  card.append($('div','muted','벤치마크 (bench.py — 서버 기동 후 실행):')); card.append(benchRow);
+  const benchBtn = $('button', null, 'bench 실행');
+  const benchStatus = $('div','status','');
+  benchBtn.onclick = async ()=>{
+    benchBtn.disabled=true; benchStatus.textContent='제출 중…';
+    const res = await jpost('/api/jobs/serve',{params:collectParams(benchRow.closest('.card'))});
+    benchBtn.disabled=false;
+    if(!res.ok){ benchStatus.textContent='오류: '+(res.data.detail||res.status); benchStatus.className='status failed'; return; }
+    pollJob(res.data.job_id, card, benchStatus, logEl, null, 'serve');
+  };
+  card.append($('div','row')).append(benchBtn);
+  card.append(statusEl); card.append(benchStatus); card.append(out); card.append(logEl);
+  refresh();
+}
+
+(async function init(){
+  const h = await jget('/api/health');
+  document.getElementById('root').textContent = h.root;
+  const cards = document.getElementById('cards');
+  h.targets.forEach(t=> cards.append(makeCard(t)));
+})();
+</script>
+</body>
+</html>

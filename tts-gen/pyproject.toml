@@ -1,0 +1,22 @@
+[project]
+name = "tts-gen"
+version = "0.1.0"
+description = "Piper TTS 서빙·최적화 실험 (BentoML)"
+requires-python = ">=3.10"
+dependencies = [
+    "piper-tts>=1.3",     # ONNX 기반 TTS (espeak-ng 내장)
+    "onnxruntime>=1.17",  # CPU/MPS. NVIDIA는 [gpu] extra 로 onnxruntime-gpu
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+    "bentoml>=1.4",       # 서빙(프레임워크)
+    "httpx>=0.27",        # 벤치 클라이언트
+]
+
+[project.optional-dependencies]
+# NVIDIA GPU: uv sync --extra gpu  (onnxruntime CUDA EP)
+# onnxruntime-gpu 는 Linux/Windows 휠만 존재 — macOS 에서는 marker로 자동 제외(sync 안전).
+# 주의: gpu extra 는 기본 onnxruntime 위에 onnxruntime-gpu 를 더한다.
+gpu = ["onnxruntime-gpu>=1.17; platform_system != 'Darwin'"]
+
+[tool.uv]
+package = false

@@ -1,0 +1,21 @@
+[project]
+name = "video-gen"
+version = "0.1.0"
+description = "AnimateDiff / Zeroscope 비디오 생성"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",         # CPU/MPS는 PyPI 기본 휠, Linux는 CUDA 휠 자동 선택
+    "diffusers>=0.27.0",    # AnimateDiff / Zeroscope 파이프라인
+    "transformers>=4.38.0",
+    "accelerate>=0.27.0",
+    "imageio[ffmpeg]",
+    "imageio-ffmpeg",
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+gpu = ["xformers>=0.0.24; platform_system == 'Linux'"]  # NVIDIA 전용
+
+[tool.uv]
+package = false

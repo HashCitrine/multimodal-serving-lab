@@ -33,11 +33,11 @@ serve/
 
 ## 실행
 ```bash
-pip install -r requirements.txt
-python server.py                       # config.yaml (기본 echo 어댑터)
+uv sync
+uv run python server.py                # config.yaml (기본 echo 어댑터)
 # 다른 터미널에서
 curl -s localhost:8000/health
-python bench.py --concurrency 1 2 4 8 --requests 64
+uv run python bench.py --concurrency 1 2 4 8 --requests 64
 ```
 
 ## 메모

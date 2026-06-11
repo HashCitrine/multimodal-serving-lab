@@ -9,15 +9,11 @@
 ```bash
 cd sd-gen
 
-# 가상환경 (권장)
-python3 -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+# 의존성 설치 (.venv 자동 생성, Python 3.11 은 uv 가 확보)
+uv sync
 
-# 패키지 설치
-pip install -r requirements.txt
-
-# NVIDIA GPU라면 xformers도 설치 (VRAM 절약)
-pip install xformers
+# NVIDIA GPU라면 xformers 추가 (VRAM 절약)
+uv sync --extra gpu
 ```
 
 ---
@@ -26,13 +22,13 @@ pip install xformers
 
 ```bash
 # config.yaml 기본 프롬프트로 생성
-python generate.py
+uv run python generate.py
 
 # 프롬프트 직접 지정
-python generate.py -p "astronaut riding a horse on the moon, photorealistic"
+uv run python generate.py -p "astronaut riding a horse on the moon, photorealistic"
 
 # 네거티브 프롬프트 + 크기 지정
-python generate.py \
+uv run python generate.py \
   -p "portrait of a samurai, detailed, cinematic" \
   -n "blurry, cartoon, watermark" \
   -W 768 -H 768 \
@@ -40,7 +36,7 @@ python generate.py \
   --seed 42
 
 # 여러 장 생성
-python generate.py -p "fantasy castle" -N 4
+uv run python generate.py -p "fantasy castle" -N 4
 ```
 
 ---

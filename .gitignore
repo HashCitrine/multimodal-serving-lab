@@ -10,6 +10,8 @@ venv/
 .venv/
 env/
 
+uv.lock
+
 # External model repos and local assets
 _external/
 

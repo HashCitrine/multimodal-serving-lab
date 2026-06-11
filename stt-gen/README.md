@@ -12,15 +12,15 @@ stt-gen/
 ├── bento_service.py  # BentoML 서비스: POST /transcribe (wav 업로드)
 ├── bentofile.yaml    # bentoml build → containerize
 ├── config.yaml
-└── requirements.txt
+└── pyproject.toml
 ```
 같은 모델을 직접 구현 baseline 서버로도 서빙: 어댑터 `../serve/adapters/whisper_stt.py`.
 
 ## 빠른 시작
 ```bash
-pip install -r requirements.txt
-python transcribe.py --from-tts "hello from whisper"        # TTS↔STT 왕복 + RTF/WER
-python bench_stt.py --models base.en small.en medium.en --compute-types float32 int8
+uv sync
+uv run python transcribe.py --from-tts "hello from whisper"  # TTS↔STT 왕복 + RTF/WER
+uv run python bench_stt.py --models base.en small.en medium.en --compute-types float32 int8
 
 # BentoML 서빙 (모델/양자화는 환경변수)
 STT_MODEL=base.en STT_COMPUTE=int8 bentoml serve bento_service:WhisperSTT  # :3000

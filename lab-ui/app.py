@@ -195,7 +195,8 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "negative_prompt": {
             "help": "피하고 싶은 요소를 적습니다.",
             "impact": "불필요한 품질 저하, 워터마크, 흐림 같은 특징을 줄이는 데 씁니다.",
-            "empty": "비워두면 sd-gen/config.yaml의 negative_prompt를 사용합니다.",
+            "empty": "기본 negative prompt를 사용합니다.",
+            "fallback": "blurry, low quality, bad anatomy, ugly, watermark",
             "placeholder": "예: blurry, low quality, watermark",
         },
         "width": {
@@ -213,17 +214,20 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "guidance": {
             "help": "CFG scale입니다. 프롬프트를 얼마나 강하게 따를지 정합니다.",
             "impact": "너무 낮으면 프롬프트 반영이 약하고, 너무 높으면 과장되거나 깨질 수 있습니다.",
-            "empty": "비워두면 sd-gen/config.yaml의 guidance_scale을 사용합니다.",
+            "empty": "기본 guidance scale을 사용합니다.",
+            "fallback": "7.5",
         },
         "num_images": {
             "help": "한 번에 생성할 이미지 개수입니다.",
             "impact": "개수를 늘리면 비교 후보가 늘지만 실행 시간과 메모리 사용량도 늘어납니다.",
-            "empty": "비워두면 sd-gen/config.yaml의 num_images를 사용합니다.",
+            "empty": "기본 이미지 개수를 사용합니다.",
+            "fallback": "1",
         },
         "seed": {
             "help": "난수 시드입니다. 같은 설정과 시드를 쓰면 결과 재현에 도움이 됩니다.",
             "impact": "-1은 매번 랜덤이며, 정수를 넣으면 같은 구도를 다시 확인하기 쉽습니다.",
-            "empty": "비워두면 sd-gen/config.yaml의 seed를 사용합니다.",
+            "empty": "기본 시드 설정을 사용합니다.",
+            "fallback": "-1",
             "placeholder": "예: -1 또는 1234",
         },
     },
@@ -235,7 +239,8 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "negative": {
             "help": "영상에서 피하고 싶은 요소를 적습니다.",
             "impact": "흐림, 낮은 품질, 왜곡 같은 특징을 줄이는 데 씁니다.",
-            "empty": "비워두면 CLI 내부의 기본 negative prompt를 사용합니다.",
+            "empty": "기본 negative prompt를 사용합니다.",
+            "fallback": "bad quality, worst quality, low resolution, blurry",
             "placeholder": "예: blurry, bad quality, flicker",
         },
         "model": {
@@ -249,17 +254,20 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "guidance": {
             "help": "프롬프트 반영 강도입니다.",
             "impact": "높을수록 프롬프트를 강하게 따르지만 과도하면 품질이 불안정할 수 있습니다.",
-            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본값을 사용합니다.",
+            "empty": "선택한 비디오 모델의 기본 guidance 값을 사용합니다.",
+            "fallback": "animatediff=7.5, zeroscope=9.0",
         },
         "width": {
             "help": "영상 프레임 너비(px)입니다.",
             "impact": "커질수록 선명도와 비용이 함께 늘어납니다.",
-            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 너비를 사용합니다.",
+            "empty": "선택한 비디오 모델의 기본 너비를 사용합니다.",
+            "fallback": "animatediff=512, zeroscope=576",
         },
         "height": {
             "help": "영상 프레임 높이(px)입니다.",
             "impact": "커질수록 선명도와 비용이 함께 늘어납니다.",
-            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 높이를 사용합니다.",
+            "empty": "선택한 비디오 모델의 기본 높이를 사용합니다.",
+            "fallback": "animatediff=512, zeroscope=320",
         },
         "frames": {
             "help": "생성할 프레임 수입니다.",
@@ -268,11 +276,13 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "fps": {
             "help": "저장할 mp4의 초당 프레임 수입니다.",
             "impact": "같은 프레임 수에서 fps가 높으면 재생 시간이 짧아지고 더 빠르게 보입니다.",
-            "empty": "비워두면 선택한 video-gen 모델의 config.yaml 기본 fps를 사용합니다.",
+            "empty": "선택한 비디오 모델의 기본 fps를 사용합니다.",
+            "fallback": "8",
         },
         "seed": {
             "help": "난수 시드입니다.",
             "impact": "-1은 매번 랜덤이며, 정수를 넣으면 유사한 결과 재현에 도움이 됩니다.",
+            "fallback": "-1",
             "placeholder": "예: -1 또는 1234",
         },
     },
@@ -284,13 +294,15 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "voice": {
             "help": "사용할 Piper 보이스 이름입니다.",
             "impact": "목소리와 언어가 바뀌며, 해당 .onnx 보이스 모델이 models에 있어야 합니다.",
-            "empty": "비워두면 tts-gen/config.yaml의 voice.name을 사용합니다.",
+            "empty": "기본 Piper 보이스를 사용합니다.",
+            "fallback": "en_US-lessac-medium",
             "placeholder": "예: en_US-lessac-medium",
         },
         "length_scale": {
             "help": "발화 속도 계수입니다.",
             "impact": "1보다 크면 느리게, 1보다 작으면 빠르게 말합니다.",
-            "empty": "비워두면 tts-gen/config.yaml의 synthesis.length_scale을 사용합니다.",
+            "empty": "기본 발화 속도를 사용합니다.",
+            "fallback": "1.0",
         },
         "download": {
             "help": "체크하면 보이스 모델을 다운로드하고 합성은 하지 않습니다.",
@@ -327,7 +339,8 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "model": {
             "help": "OpenAI 호환 서버에 요청할 모델 이름입니다.",
             "impact": "다른 모델을 지정하면 품질, 속도, 메모리 사용량이 달라집니다.",
-            "empty": "비워두면 llm-serve/config.yaml의 provider.model을 사용합니다.",
+            "empty": "기본 LLM 모델을 사용합니다.",
+            "fallback": "llama3.2:1b-instruct-q4_K_M",
             "placeholder": "예: llama3.2:1b-instruct-q4_K_M",
         },
         "max_tokens": {
@@ -345,7 +358,7 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         "prompt": {
             "help": "LLM이 말할 문장을 만들도록 줄 프롬프트입니다.",
             "impact": "입력하면 LLM 생성 단계를 거친 뒤 그 응답을 음성/영상으로 만듭니다.",
-            "empty": "비워두면 text 값을 그대로 말하게 합니다.",
+            "empty": "아래 text 값을 그대로 말하게 합니다.",
             "placeholder": "예: Greet a new learner in one sentence.",
         },
         "text": {
@@ -364,7 +377,7 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
 }
 
 
-DEFAULT_EMPTY_HELP = "비워두면 이 CLI 인자를 전달하지 않고 하위 config.yaml 또는 CLI 기본값을 사용합니다."
+DEFAULT_EMPTY_HELP = "기본 설정값을 사용합니다."
 
 
 METRIC_HELP: dict[str, dict[str, str]] = {
@@ -1002,6 +1015,7 @@ def _param_view(target: str, params: dict) -> list[dict]:
             "help": meta.get("help", ""),
             "impact": meta.get("impact", ""),
             "empty": empty_help,
+            "fallback": meta.get("fallback", ""),
             "placeholder": meta.get("placeholder", ""),
         })
         out.append(view)

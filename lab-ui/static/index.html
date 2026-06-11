@@ -113,8 +113,9 @@ function paramMetaText(p){
     const hi = p.max != null ? p.max : '';
     parts.push(`범위: ${lo}~${hi}`);
   }
-  if (p.default != null) parts.push('기본값: ' + p.default);
-  else parts.push('기본값: 비어 있음');
+  if (p.default != null) parts.push('기본 입력값: ' + p.default);
+  else parts.push('기본 입력값: 없음');
+  if (p.fallback) parts.push('입력하지 않으면 사용: ' + p.fallback);
   return parts.join(' · ');
 }
 
@@ -123,7 +124,7 @@ function appendParamHelp(wrap, p){
   if (p.help) wrap.append($('span','field-help',p.help));
   if (p.impact) wrap.append($('span','field-impact','영향: ' + p.impact));
   if (meta) wrap.append($('span','field-meta',meta));
-  if (p.empty) wrap.append($('span','field-empty','빈 값: ' + p.empty));
+  if (p.empty) wrap.append($('span','field-empty','입력하지 않으면: ' + p.empty));
 }
 
 function fieldLabel(p){

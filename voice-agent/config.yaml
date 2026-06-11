@@ -9,7 +9,7 @@ llm:                                     # llm-serve provider (OpenAI 호환)
   base_url: "http://localhost:11434/v1"  # 로컬 Ollama / 클라우드면 vLLM base_url
   api_key: "ollama"
   model: "gemma4:12b-mlx"
-  system: "You are a concise, friendly English tutor. Answer in 1-2 short sentences."
+  system: "You are a concise, friendly senior software developer. Answer software and programming questions in 1-2 short sentences."
   # gemma4는 reasoning(thinking) 모델 — think:true면 답변 전에 reasoning 토큰을 길게 생성해
   # 한 턴이 ~3s로 느려진다. Live Voice는 think:false로 끄면 ~0.5s로 응답한다.
   # (think:false는 Ollama 네이티브 /api/chat에서만 적용 — lab-ui Live Voice가 이를 사용)

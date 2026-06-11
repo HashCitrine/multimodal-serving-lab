@@ -39,6 +39,12 @@
   .field-help { color:#c3cad6; font-size:11px; line-height:1.35; max-width:100%; overflow-wrap:anywhere; }
   .field-impact, .field-empty, .field-meta { color:var(--mut); font-size:11px; line-height:1.35; max-width:100%; overflow-wrap:anywhere; }
   .field-empty { color:#b8a96f; }
+  /* Live Voice 설정: select를 한 줄에 정렬(grid + 상단 정렬)하고, 드롭다운에 이미 보이는
+     '허용값/기본값' 메타 줄은 숨겨 설명을 간결하게 유지한다. */
+  .lv-settings { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px 16px; align-items:start; }
+  .lv-settings .field { flex:none; }
+  .lv-settings select { width:100%; }
+  .lv-settings .field-meta, .lv-settings .field-empty { display:none; }
   input, select, textarea { background:#0d0f14; color:var(--fg); border:1px solid var(--line);
           border-radius:6px; padding:6px 8px; font:inherit; }
   input[type=file] { max-width:100%; }
@@ -626,22 +632,21 @@ async function buildLiveVoiceCard(){
   const micOk = hasMicrophoneApi();
   if (!micOk) card.append($('p','hints', microphoneUnavailableMessage()));
 
-  // --- 설정(STT 모델/compute/device, Piper voice) ---
-  const settings = $('div','row');
-  const addSel = (name)=>{ const l=$('label','field'); l.append($('span','field-name',name)); const s=document.createElement('select'); l.append(s); settings.append(l); return s; };
-  const sttSel = addSel('STT 모델'), computeSel = addSel('compute_type'), deviceSel = addSel('device'), voiceSel = addSel('Piper voice');
-  card.append(settings);
-  const llmNote = $('p','muted',''); card.append(llmNote);
-
-  const fill = (sel, items, def)=>{ sel.innerHTML=''; (items||[]).forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; if(v===def) o.selected=true; sel.append(o); }); };
+  // --- 설정(STT 모델/compute/device, Piper voice, LLM 모델) ---
+  // paramInput()으로 select+설명(help/impact)을 렌더하되, 정렬된 grid(.lv-settings)에 담아 정돈한다.
+  // 각 control.name은 /api/voice/live Form 필드명과 일치하므로 collectParams로 그대로 수집된다.
+  const setWrap = $('div','section'); setWrap.append($('h3', null, '설정'));
+  const settings = $('div','lv-settings'); setWrap.append(settings); card.append(setWrap);
+  const note = $('p','muted','멀티턴 메모리 사용 — 같은 세션의 이전 발화를 기억합니다.'); setWrap.append(note);
   try {
     const opt = await jget('/api/voice/live/options');
-    fill(sttSel, opt.stt_models, opt.stt_default);
-    fill(computeSel, opt.compute_types, opt.compute_default);
-    fill(deviceSel, opt.devices, opt.device_default);
-    fill(voiceSel, opt.voices && opt.voices.length ? opt.voices : [opt.voice_default], opt.voice_default);
-    llmNote.textContent = 'LLM: ' + (opt.llm_model || '(config.yaml)') + ' · 멀티턴 메모리 사용';
-  } catch(e){ llmNote.textContent = '옵션 로드 실패: ' + e.message; }
+    (opt.controls || []).forEach(p => {
+      // str(시스템 프롬프트)은 textarea로 렌더하고 grid 전체 폭을 차지하게 한다.
+      const f = p.type === 'str' ? textareaParam(p) : paramInput(p);
+      if (p.type === 'str') f.style.gridColumn = '1 / -1';
+      settings.append(f);
+    });
+  } catch(e){ note.textContent = '옵션 로드 실패: ' + e.message; }
 
   // --- 녹음/전송/초기화 ---
   const ctrlRow = $('div','row');
@@ -708,10 +713,8 @@ async function buildLiveVoiceCard(){
   async function sendTurn(blob){
     const fd = new FormData();
     fd.append('audio', blob, 'live.wav');
-    if (sttSel.value) fd.append('model', sttSel.value);
-    if (computeSel.value) fd.append('compute_type', computeSel.value);
-    if (deviceSel.value) fd.append('device', deviceSel.value);
-    if (voiceSel.value) fd.append('voice', voiceSel.value);
+    // 카드의 모든 [data-pname] 컨트롤 수집 → {model,compute_type,device,voice,llm_model} (빈 값 생략).
+    Object.entries(collectParams(card)).forEach(([k, v]) => fd.append(k, v));
     const res = await jpostForm('/api/voice/live', fd);
     if (!res.ok){
       statusEl.textContent = '오류: ' + (res.data.error || res.data.detail || res.status);

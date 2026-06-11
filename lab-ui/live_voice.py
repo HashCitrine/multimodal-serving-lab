@@ -89,6 +89,15 @@ def _voice_present(voice_dir: Path, voice: str) -> bool:
     return voice_dir.exists() and any(voice_dir.glob(f"{voice}*.onnx"))
 
 
+def _ollama_models(base: str = "http://localhost:11434") -> list[str]:
+    """Ollama에 설치된 모델명 목록(정렬). 미기동/실패 시 빈 리스트."""
+    try:
+        r = httpx.get(f"{base}/api/tags", timeout=1.5)
+        return sorted(m["name"] for m in r.json().get("models", []))
+    except Exception:
+        return []
+
+
 def _live_cfg() -> dict:
     return yaml.safe_load(open(VOICE_CFG_PATH, "r", encoding="utf-8"))
 
@@ -213,7 +222,7 @@ def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
         }
 
     # 2) LLM (멀티턴 — 서버 history에 누적 후 system + history 전체 전달)
-    sys_prompt = llm_cfg.get("system", "You are a concise, friendly English tutor. Answer in 1-2 short sentences.")
+    sys_prompt = llm_cfg.get("system", "You are a concise, friendly senior software developer. Answer software and programming questions in 1-2 short sentences.")
     # warmup: 모델 콜드 로드(첫 턴) 비용을 흡수해 이후 턴의 정상상태 지연을 측정한다.
     model_name = llm_cfg["model"]
     if model_name not in _LLM_WARMED:
@@ -285,7 +294,11 @@ router = APIRouter()
 
 @router.get("/api/voice/live/options")
 def options():
-    """Live Voice 카드의 STT 모델/Piper voice 선택지와 현재 세션 정보."""
+    """Live Voice 카드 컨트롤 정의(설명 포함) + 현재 세션 정보.
+
+    각 control은 프런트의 paramInput()이 그대로 렌더할 수 있는 형태이고,
+    name은 /api/voice/live 의 Form 필드명과 일치한다(model/compute_type/device/voice/llm_model).
+    """
     cfg = {}
     try:
         cfg = _live_cfg()
@@ -293,20 +306,44 @@ def options():
         pass
     stt_cfg = cfg.get("stt", {})
     tts_cfg = cfg.get("tts", {})
+    llm_cfg = cfg.get("llm", {})
     vdir = _live_voice_dir(tts_cfg)
     voices = sorted(p.stem for p in vdir.glob("*.onnx")) if vdir.exists() else []
-    return {
-        "voices": voices,
-        "voice_default": tts_cfg.get("voice", "en_US-lessac-medium"),
-        "stt_models": STT_MODELS,
-        "stt_default": stt_cfg.get("model", "base.en"),
-        "compute_types": COMPUTE_TYPES,
-        "compute_default": stt_cfg.get("compute_type", "int8"),
-        "devices": DEVICES,
-        "device_default": stt_cfg.get("device", "auto"),
-        "llm_model": cfg.get("llm", {}).get("model", ""),
-        "turns": len(_LIVE_HISTORY) // 2,
-    }
+
+    llm_default = llm_cfg.get("model", "")
+    llm_models = _ollama_models()
+    if llm_default and llm_default not in llm_models:  # 설치 목록을 못 받아도 현재 모델은 노출
+        llm_models = [llm_default, *llm_models]
+
+    def ctl(name, choices, default, help_, impact):
+        return {"name": name, "type": "choice", "choices": choices,
+                "default": default, "help": help_, "impact": impact}
+
+    controls = [
+        ctl("model", STT_MODELS, stt_cfg.get("model", "base.en"),
+            "faster-whisper STT 모델 크기입니다.",
+            "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다."),
+        ctl("compute_type", COMPUTE_TYPES, stt_cfg.get("compute_type", "int8"),
+            "STT 모델 계산 정밀도/양자화 방식입니다.",
+            "int8은 CPU에서 가볍고, float16/int8_float16은 CUDA 환경에 적합합니다."),
+        ctl("device", DEVICES, stt_cfg.get("device", "auto"),
+            "STT 실행 장치입니다.",
+            "auto는 가능한 장치를 고르고, cpu/cuda는 명시적으로 고정합니다."),
+        ctl("voice", voices or [tts_cfg.get("voice", "en_US-lessac-medium")],
+            tts_cfg.get("voice", "en_US-lessac-medium"),
+            "응답 음성을 합성할 Piper 보이스입니다.",
+            "보이스마다 말투·발음·샘플레이트가 다릅니다. TTS 카드에서 받은 보이스만 보입니다."),
+        ctl("llm_model", llm_models or [llm_default], llm_default,
+            "응답을 생성하는 LLM입니다(Ollama 설치 모델).",
+            "큰 모델은 품질이 좋아질 수 있지만 응답이 느려집니다. reasoning 모델은 thinking 때문에 더 느릴 수 있습니다."),
+        {  # 자유 텍스트 — 프런트는 type:"str"을 textarea로 렌더(전체 폭).
+            "name": "system", "type": "str",
+            "default": llm_cfg.get("system", ""),
+            "help": "LLM의 역할·말투를 정하는 시스템 프롬프트입니다.",
+            "impact": "비우면 config 기본값을 사용합니다. 음성 응답이라 1-2문장으로 짧게 답하도록 두는 것이 좋습니다.",
+        },
+    ]
+    return {"controls": controls, "turns": len(_LIVE_HISTORY) // 2}
 
 
 @router.post("/api/voice/live/reset")
@@ -323,6 +360,8 @@ def turn(
     compute_type: Optional[str] = Form(None),
     device: Optional[str] = Form(None),
     voice: Optional[str] = Form(None),
+    llm_model: Optional[str] = Form(None),
+    system: Optional[str] = Form(None),
 ):
     # 동기 def → FastAPI가 스레드풀에서 실행(블로킹 파이프라인이 이벤트 루프를 막지 않음).
     suffix = Path(audio.filename or "").suffix.lower()
@@ -343,6 +382,10 @@ def turn(
     except Exception as e:
         return JSONResponse({"error": f"voice-agent/config.yaml 로드 실패: {e}"}, status_code=500)
     stt_cfg, llm_cfg, tts_cfg = cfg.get("stt", {}), cfg.get("llm", {}), cfg.get("tts", {})
+    if llm_model:  # UI에서 고른 LLM 모델로 그 턴만 override(base_url/think는 config 유지)
+        llm_cfg = {**llm_cfg, "model": llm_model}
+    if system and system.strip():  # UI에서 편집한 시스템 프롬프트로 override(비우면 config 기본값)
+        llm_cfg = {**llm_cfg, "system": system}
     stt_model = model or stt_cfg.get("model", "base.en")
     stt_compute = compute_type or stt_cfg.get("compute_type", "int8")
     stt_device = device or stt_cfg.get("device", "auto")

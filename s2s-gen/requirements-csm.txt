@@ -1,0 +1,18 @@
+# csm-tts BentoML 서비스 컨테이너 빌드용 의존성.
+# pyproject.toml [project.optional-dependencies] csm 핀을 미러링(+ 서비스 런타임).
+# CSM repo(generator.py/models.py)는 외부 clone(CSM_DIR 마운트)이라 여기 없다.
+bentoml>=1.4
+faster-whisper>=1.0
+openai>=1.30
+piper-tts>=1.3
+numpy>=1.24
+PyYAML>=6.0
+torch==2.4.0
+torchaudio==2.4.0
+tokenizers==0.21.0
+transformers==4.49.0
+huggingface_hub==0.28.1
+moshi==0.2.2
+torchtune==0.4.0
+torchao==0.9.0
+silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master

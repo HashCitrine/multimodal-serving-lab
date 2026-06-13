@@ -50,6 +50,36 @@ CSM_DIR=../_external/csm uv run python s2s.py --backend csm --ask "How do you sp
 준비가 안 됐으면(토큰·게이트·clone 누락) 실행 전 친절한 안내가 뜬다. 현재 `sesame/csm-1b` 는
 config.json 이 transformers 형식이라, 백엔드가 `ckpt.pt` + 표준 ModelArgs 로 직접 로딩해 우회한다.
 
+## CSM 저지연 서빙 — `csm-tts` 상주 서비스(BentoML)
+
+CSM 은 로드가 무겁다(수~수십 초). 매 호출마다 로드하면 실시간 대화가 불가능하므로, STT(whisper-stt)·
+TTS(piper-tts)와 동일하게 **BentoML 서비스로 모델을 1회 로드·상주**시킨다. 이후 요청은 합성 비용만 든다.
+로드/합성 로직은 `csm_runtime.py` 공통 모듈을 backend 와 공유한다.
+
+```bash
+# 상주 서비스 기동(모델 1회 로드)
+CSM_DIR=../_external/csm uv run --extra csm bentoml serve bento_service:CSMTTS --port 3003
+# 합성 요청(text → PCM16 wav)
+curl -s -X POST http://127.0.0.1:3003/synthesize \
+     -H 'Content-Type: application/json' -d '{"text":"hello from csm"}' -o out.wav
+```
+
+- **CLI 가 자동으로 서비스를 활용**: `csm_service_url`(기본 `http://127.0.0.1:3003`)이 떠 있으면
+  `s2s.py --backend csm` 이 모델 재로드 없이 서비스로 합성을 위임한다(`_synthesize` 가 service-aware).
+  서비스가 없으면 인프로세스로 1회 로드해 단독 동작한다.
+- **lab-ui "모델 서비스" 카드**로 whisper-stt/piper-tts/csm-tts 를 한 화면에서 기동/정지/상태확인.
+- **Live Voice** 의 `serving_mode`(in_process|served) 토글로 "인프로세스 vs 서빙" 지연을 실측 비교.
+  s2s(csm) 모드의 TTS 는 항상 csm-tts 서비스를 쓴다.
+
+### 서비스 벤치(상주 — 로드 비용 제외)
+
+```bash
+uv run --extra csm python bench_csm.py    # csm-tts /synthesize_meta 스윕 → 순수 합성 RTF
+```
+
+> 컨테이너화(`bentoml build` → `containerize`)는 `bentofile.yaml`/`requirements-csm.txt` 로 가능하나,
+> CSM repo(generator.py 등)·게이트 가중치는 외부라 실행 시 `CSM_DIR` 마운트 + HF 토큰 주입이 필요하다.
+
 ## Moshi(full-duplex) 준비 — 라이브 웹 데모
 
 Moshi 는 실시간 풀듀플렉스라 파일→파일이 아니다. lab-ui "Moshi 라이브" 카드로 기동하거나:
@@ -78,10 +108,15 @@ CSM_DIR=../_external/csm uv run python bench_s2s.py --backend csm
 s2s-gen/
 ├── s2s.py             # 단일 턴 CLI(cascade|csm): in_wav→out_wav, 지연 예산 출력
 ├── bench_s2s.py       # TTFA·E2E·RTF 중앙값 벤치
-├── config.yaml        # backend 선택 + cascade(STT/LLM/TTS) + csm 슬롯
+├── bench_csm.py       # csm-tts 상주 서비스 RTF 벤치(/synthesize_meta)
+├── bento_service.py   # csm-tts BentoML 서비스(CSM 1회 로드·상주)
+├── bentofile.yaml     # csm-tts 컨테이너 빌드 정의
+├── requirements-csm.txt # 컨테이너 빌드용 의존성(csm extra 미러)
+├── csm_runtime.py     # CSM 로드/합성 공통 모듈(service ↔ backend 공유)
+├── config.yaml        # backend 선택 + cascade(STT/LLM/TTS) + csm 슬롯 + csm_service_url
 └── backends/
     ├── base.py        # S2SBackend(abstract): generate(in_wav,out_wav)->metrics
     ├── cascade.py     # STT→LLM→TTS 기준선(_synthesize 교체점)
-    ├── csm.py         # cascade 상속 + TTS만 CSM(표현형, MPS)
+    ├── csm.py         # cascade 상속 + TTS만 CSM(service-aware: csm-tts 서비스 or 인프로세스)
     └── moshi.py       # full-duplex 라이브 전용 안내 스텁(lab-ui 런처 사용)
 ```

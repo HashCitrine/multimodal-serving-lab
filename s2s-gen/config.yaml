@@ -28,6 +28,10 @@ tts:                                     # tts-gen (Piper) — 입력 음성 합
 csm_dir: "../_external/csm"   # README 안내 clone 위치(미존재 시 diagnostics가 안내)
 csm_speaker: 0         # CSM speaker id
 csm_max_audio_ms: 20000
+# 저지연 서빙: csm-tts BentoML 서비스가 떠 있으면 합성을 위임(모델 재로드 0). 미도달 시 인프로세스 폴백.
+#   기동: CSM_DIR=../_external/csm uv run --extra csm bentoml serve bento_service:CSMTTS --port 3003
+#   (lab-ui "모델 서비스" 카드로도 기동 가능)
+csm_service_url: "http://127.0.0.1:3003"
 
 # --- moshi (Kyutai, full-duplex 라이브 전용) --------------------------------
 # moshi 는 파일→파일 오프라인 API가 없어 여기 backend 로는 실행하지 않는다.

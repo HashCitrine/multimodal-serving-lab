@@ -61,7 +61,6 @@ _METRICS: dict[str, tuple[str, str, str, str]] = {
 # S2S 모드 백엔드 — 파일→파일(턴제)로 동작하는 것만. moshi(full-duplex)는 라이브 전용이라 제외.
 S2S_BACKENDS = ["csm"]
 PIPELINE_MODES = ["cascade", "s2s"]
-S2S_GEN_DIR = ROOT / "s2s-gen"
 
 # --- 프로세스 내 상태(모델 캐시 + 대화 메모리) ---
 _STT_CACHE: dict[tuple, Any] = {}  # (model, compute_type, device) -> WhisperModel
@@ -200,88 +199,56 @@ def _llm_chat_stream(llm_cfg: dict, messages: list[dict]):
         return answer.strip(), ttft or 0.0, time.perf_counter() - t0
 
 
-def _extract_s2s_error(out: str) -> str:
-    """s2s.py 실패 출력에서 사람이 읽을 한 줄 메시지를 뽑는다(미준비 항목/RuntimeError)."""
-    import re
-    m = re.search(r"RuntimeError:\s*(.+)", out)
-    if m:
-        return m.group(1).strip()
-    items = re.findall(r"^\s*-\s*(.+)$", out, re.M)  # "백엔드가 아직 준비되지 않았습니다" 불릿
-    if items:
-        return " / ".join(i.strip() for i in items[:4])
-    tail = [l for l in out.splitlines() if l.strip()][-1:]
-    return tail[0].strip() if tail else "S2S 실행 실패"
+# --- 모델 서비스(BentoML) 클라이언트 — app.py SERVICES 포트와 일치 유지 ---
+# 저지연 서빙: 모델을 상주 서비스로 띄워두고 HTTP 로 호출한다. csm-tts 는 특히 로드가 무거워
+# (매 턴 재로드 불가) 상주 서비스가 핵심. 경량 모델(STT/Piper)은 서비스화 시 HTTP 오버헤드로
+# 인프로세스 대비 지연이 늘 수 있어 toggle(serving_mode)로 둘을 실측 비교한다.
+SVC_STT_URL = "http://127.0.0.1:3001"   # whisper-stt
+SVC_TTS_URL = "http://127.0.0.1:3002"   # piper-tts
+SVC_CSM_URL = "http://127.0.0.1:3003"   # csm-tts (표현형 TTS)
+SERVING_MODES = ["in_process", "served"]
 
 
-def _run_s2s_turn(in_path: Path, s2s_backend: str, device: str, tts_cfg: dict):
-    """한 S2S 턴 — s2s-gen CLI 를 그 venv 에서 subprocess 로 실행.
-
-    Live Voice 의 cascade 는 인프로세스(저지연)지만, csm 은 torch/CSM 의존성이 lab-ui venv 가
-    아니라 s2s-gen venv(`--extra csm`)에 있다. 따라서 in-process import 대신
-    `uv run --extra csm python s2s.py --backend <b> --audio <wav>` 로 올바른 환경에서 실행하고,
-    생성된 wav(`s2s-gen/outputs/answer_<b>.wav`)를 가져와 서빙한다. csm_dir 등은 s2s-gen/config.yaml
-    이 제공한다. 모델을 매 턴 로드하므로 csm 턴은 느리다(빠른 대화는 cascade 사용). _LIVE_LOCK 보유 중 호출.
-    """
-    global _LIVE_TURN
-    import re
-    import shutil
-    import subprocess
-
-    cmd = ["uv", "run", "--extra", "csm", "python", "s2s.py",
-           "--backend", s2s_backend, "--audio", str(in_path)]
+def _svc_up(url: str) -> bool:
+    """BentoML /readyz — 모델 로딩이 끝나 요청 가능한가(CSM 은 로드가 길다)."""
     try:
-        r = subprocess.run(cmd, cwd=str(S2S_GEN_DIR), capture_output=True, text=True, timeout=600)
-    except subprocess.TimeoutExpired:
-        return {
-            "turn_id": None, "transcript": "", "answer": None, "audio_url": None,
-            "input_audio_s": None, "output_audio_s": None,
-            "note": f"S2S '{s2s_backend}' 처리 시간 초과(>600s). csm 은 무거우니 'S2S' 카드 또는 cascade 를 쓰세요.",
-            "metrics": _label({}),
-        }
-    out = (r.stdout or "") + "\n" + (r.stderr or "")
-    if r.returncode != 0:
-        return {
-            "turn_id": None, "transcript": "", "answer": None, "audio_url": None,
-            "input_audio_s": None, "output_audio_s": None,
-            "note": f"S2S '{s2s_backend}' 준비/실행 실패 — {_extract_s2s_error(out)}",
-            "metrics": _label({}),
-        }
-
-    def g(pat):
-        m = re.search(pat, out)
-        return m.group(1) if m else None
-
-    src = S2S_GEN_DIR / "outputs" / f"answer_{s2s_backend}.wav"
-    _LIVE_TURN += 1
-    turn_id = _LIVE_TURN
-    LIVE_OUT.mkdir(parents=True, exist_ok=True)
-    audio_url = None
-    if src.exists():
-        shutil.copyfile(src, LIVE_OUT / f"live_{turn_id}.wav")  # 기존 artifacts 라우트로 서빙
-        audio_url = f"/api/artifacts/voice-agent/live_{turn_id}.wav"
-
-    raw = {}
-    if g(r"TTFA\s*:\s*([0-9.]+)\s*ms"):
-        raw["ttfa_ms"] = round(float(g(r"TTFA\s*:\s*([0-9.]+)\s*ms")))
-    if g(r"E2E\s*:\s*([0-9.]+)\s*ms"):
-        raw["e2e_ms"] = round(float(g(r"E2E\s*:\s*([0-9.]+)\s*ms")))
-    if g(r"RTF\s*:\s*([0-9.]+)"):
-        raw["rtf"] = round(float(g(r"RTF\s*:\s*([0-9.]+)")), 3)
-    out_s = g(r"\[응답 음성\]\s*([0-9.]+)s")
-    return {
-        "turn_id": turn_id,
-        "transcript": g(r'\[인식\]\s*"(.*?)"') or "(음성 입력)",
-        "answer": g(r'\[응답\]\s*"(.*?)"') or f"(CSM 음성 응답 — {s2s_backend})",
-        "audio_url": audio_url,
-        "input_audio_s": None,
-        "output_audio_s": float(out_s) if out_s else None,
-        "metrics": _label(raw),
-    }
+        return httpx.get(f"{url}/readyz", timeout=0.8).status_code < 500
+    except Exception:
+        return False
 
 
-def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
-              voice_dir: Path, voice_name: str, llm_cfg: dict):
-    """한 대화 턴: STT → LLM(멀티턴) → TTS. _LIVE_LOCK 보유 상태에서만 호출."""
+def _stt_inproc(in_path: Path, model: str, compute: str, device: str) -> str:
+    stt = _get_stt(model, compute, device)
+    segs, _ = stt.transcribe(str(in_path), beam_size=1)
+    return "".join(s.text for s in segs).strip()
+
+
+def _stt_via_svc(in_path: Path) -> str:
+    """whisper-stt 서비스로 전사(멀티파트 wav 업로드)."""
+    with open(in_path, "rb") as f:
+        r = httpx.post(f"{SVC_STT_URL}/transcribe",
+                       files={"audio": (in_path.name, f, "audio/wav")}, timeout=120.0)
+    r.raise_for_status()
+    return (r.json().get("text") or "").strip()
+
+
+def _tts_via_svc(url: str, text: str, out: Path) -> float:
+    """piper-tts/csm-tts 서비스로 합성(JSON text→wav 바이트). 반환: 응답 음성 길이(초)."""
+    r = httpx.post(f"{url}/synthesize", json={"text": text or "..."}, timeout=600.0)
+    r.raise_for_status()
+    out.write_bytes(r.content)
+    with wave.open(str(out), "rb") as w:
+        return w.getnframes() / float(w.getframerate() or 1)
+
+
+def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TTS"):
+    """한 대화 턴: STT → LLM(멀티턴) → TTS. _LIVE_LOCK 보유 상태에서만 호출.
+
+    STT/TTS 는 콜러블로 주입한다 — 인프로세스(faster-whisper/Piper) 또는 BentoML 서비스 호출을
+    같은 파이프라인·메트릭·history 로 처리하기 위함. csm 경로는 tts_fn 만 csm-tts 서비스로 바뀐다.
+      stt_fn(in_path) -> transcript(str)
+      tts_fn(text, out_wav) -> 응답 음성 길이(초)
+    """
     global _LIVE_TURN
     budget: dict[str, float] = {}
 
@@ -292,11 +259,9 @@ def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
     except Exception:
         in_dur = 0.0
 
-    # 1) STT
-    stt = _get_stt(stt_model, stt_compute, stt_device)
+    # 1) STT (인프로세스 또는 whisper-stt 서비스)
     t0 = time.perf_counter()
-    segs, _ = stt.transcribe(str(in_path), beam_size=1)
-    transcript = "".join(s.text for s in segs).strip()
+    transcript = stt_fn(in_path)
     budget["stt_s"] = time.perf_counter() - t0
 
     if not transcript:
@@ -339,18 +304,17 @@ def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
         }
     _LIVE_HISTORY.append({"role": "assistant", "content": answer})
 
-    # 3) TTS
+    # 3) TTS (인프로세스 Piper, piper-tts 서비스, 또는 csm-tts 서비스 — tts_fn 으로 주입)
     _LIVE_TURN += 1
     turn_id = _LIVE_TURN
     LIVE_OUT.mkdir(parents=True, exist_ok=True)
     out_wav = LIVE_OUT / f"live_{turn_id}.wav"
-    voice_obj = _get_voice(voice_dir, voice_name)
     t0 = time.perf_counter()
-    out_dur = _tts_to_wav(voice_obj, answer or "...", out_wav)
+    out_dur = tts_fn(answer or "...", out_wav)
     budget["tts_s"] = time.perf_counter() - t0
 
     total = budget["stt_s"] + budget["llm_total_s"] + budget["tts_s"]
-    stage = max([("STT", budget["stt_s"]), ("LLM", budget["llm_total_s"]), ("TTS", budget["tts_s"])],
+    stage = max([("STT", budget["stt_s"]), ("LLM", budget["llm_total_s"]), (tts_label, budget["tts_s"])],
                 key=lambda x: x[1])
     raw = {
         "e2e_ms": round(total * 1000),
@@ -358,6 +322,7 @@ def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
         "llm_ttft_ms": round(budget["llm_ttft_s"] * 1000),
         "llm_total_ms": round(budget["llm_total_s"] * 1000),
         "tts_ms": round(budget["tts_s"] * 1000),
+        "rtf": round(total / out_dur, 3) if out_dur else 0,
         "bottleneck": stage[0],
         "bottleneck_pct": round(stage[1] / total * 100) if total else 0,
     }
@@ -408,10 +373,13 @@ def options():
     controls = [
         ctl("pipeline_mode", PIPELINE_MODES, "cascade",
             "음성 응답 파이프라인 방식입니다.",
-            "cascade는 STT→LLM→TTS(인프로세스, 빠름·관찰가능). s2s는 음성 네이티브 모델(아래 backend)로 단계 없는 응답을 시도합니다."),
+            "cascade는 STT→LLM→TTS(Piper). s2s는 표현형 TTS(아래 backend)로 응답합니다. 어느 쪽이든 LLM은 Ollama입니다."),
+        ctl("serving_mode", SERVING_MODES, "in_process",
+            "모델을 어디서 실행할지 — 인프로세스 vs 상주 BentoML 서비스.",
+            "in_process는 STT/Piper를 이 프로세스에 캐싱(경량 모델엔 최속). served는 whisper-stt/piper-tts 서비스로 HTTP 호출(오버헤드로 더 느릴 수 있음 — 실측 비교용). s2s(csm)는 TTS가 항상 csm-tts 서비스이며, '모델 서비스' 카드에서 먼저 기동해야 합니다."),
         ctl("s2s_backend", S2S_BACKENDS, "csm",
-            "s2s 모드에서 쓸 음성 모델입니다.",
-            "csm(Sesame, 표현형 TTS)은 외부 가중치가 필요합니다. 미준비 시 설치 안내가 표시됩니다. cascade 모드에서는 무시됩니다. moshi(풀듀플렉스)는 'Moshi 라이브' 카드를 쓰세요."),
+            "s2s 모드에서 쓸 표현형 TTS 모델입니다.",
+            "csm(Sesame)은 로드가 무거워 csm-tts 상주 서비스로 동작합니다. '모델 서비스' 카드에서 csm-tts를 기동하세요(외부 가중치 필요). cascade 모드에서는 무시됩니다. moshi(풀듀플렉스)는 'Moshi 라이브' 카드를 쓰세요."),
         ctl("model", STT_MODELS, stt_cfg.get("model", "base.en"),
             "faster-whisper STT 모델 크기입니다.",
             "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다."),
@@ -456,6 +424,7 @@ def turn(
     system: Optional[str] = Form(None),
     pipeline_mode: Optional[str] = Form(None),
     s2s_backend: Optional[str] = Form(None),
+    serving_mode: Optional[str] = Form(None),
 ):
     # 동기 def → FastAPI가 스레드풀에서 실행(블로킹 파이프라인이 이벤트 루프를 막지 않음).
     suffix = Path(audio.filename or "").suffix.lower()
@@ -477,17 +446,8 @@ def turn(
         return JSONResponse({"error": f"voice-agent/config.yaml 로드 실패: {e}"}, status_code=500)
     stt_cfg, llm_cfg, tts_cfg = cfg.get("stt", {}), cfg.get("llm", {}), cfg.get("tts", {})
 
-    # S2S 모드 — 음성 네이티브 backend(moshi/csm)에 위임. cascade와 달리 STT/LLM/TTS·Ollama·voice가
-    # 불필요하다(backend가 음성→음성을 직접 처리). 한 번에 하나의 턴만(모델 충돌 방지).
-    if (pipeline_mode or "cascade") == "s2s":
-        s2s_dev = device or cfg.get("device", "auto")
-        s2s_name = s2s_backend or S2S_BACKENDS[0]
-        with _LIVE_LOCK:
-            try:
-                return _run_s2s_turn(in_path, s2s_name, s2s_dev, tts_cfg)
-            except Exception as e:
-                return JSONResponse({"error": f"S2S 처리 실패: {type(e).__name__}: {e}"}, status_code=500)
-
+    mode = pipeline_mode or "cascade"        # cascade | s2s
+    serving = serving_mode or "in_process"   # in_process | served
     if llm_model:  # UI에서 고른 LLM 모델로 그 턴만 override(base_url/think는 config 유지)
         llm_cfg = {**llm_cfg, "model": llm_model}
     if system and system.strip():  # UI에서 편집한 시스템 프롬프트로 override(비우면 config 기본값)
@@ -498,20 +458,49 @@ def turn(
     voice_name = voice or tts_cfg.get("voice", "en_US-lessac-medium")
     voice_dir = _live_voice_dir(tts_cfg)
 
-    # 사전 점검 — 실패 시 화면에 명확한 한국어 안내(503)
+    # 공통 사전 점검 — LLM(Ollama)
     if not _ollama_up():
         return JSONResponse(
             {"error": f"Ollama 미기동 — `ollama serve` 후 모델을 pull 하세요 (예: ollama pull {llm_cfg.get('model', '')})."},
             status_code=503)
-    if not _voice_present(voice_dir, voice_name):
-        return JSONResponse(
-            {"error": f"Piper voice '{voice_name}' 없음 — TTS 카드에서 '보이스 다운로드'(--download)를 먼저 실행하세요."},
-            status_code=503)
+
+    # STT 경로 선택(인프로세스 캐시 vs whisper-stt 서비스)
+    if serving == "served":
+        if not _svc_up(SVC_STT_URL):
+            return JSONResponse(
+                {"error": "whisper-stt 서비스 미기동 — '모델 서비스' 카드에서 whisper-stt 를 기동하거나 serving_mode 를 in_process 로 두세요."},
+                status_code=503)
+        stt_fn = _stt_via_svc
+    else:
+        stt_fn = lambda p: _stt_inproc(p, stt_model, stt_compute, stt_device)  # noqa: E731
+
+    # TTS 경로 선택
+    if mode == "s2s":
+        # csm 은 로드가 무거워 항상 csm-tts 상주 서비스로 합성(매 턴 재로드 회피 = 저지연의 핵심).
+        if not _svc_up(SVC_CSM_URL):
+            return JSONResponse(
+                {"error": "csm-tts 서비스 미기동 — '모델 서비스' 카드에서 csm-tts 를 기동하세요(외부 CSM 가중치 필요, 첫 기동 시 로딩에 수십 초)."},
+                status_code=503)
+        tts_fn = lambda text, out: _tts_via_svc(SVC_CSM_URL, text, out)  # noqa: E731
+        tts_label = "CSM"
+    elif serving == "served":
+        if not _svc_up(SVC_TTS_URL):
+            return JSONResponse(
+                {"error": "piper-tts 서비스 미기동 — '모델 서비스' 카드에서 piper-tts 를 기동하거나 serving_mode 를 in_process 로 두세요."},
+                status_code=503)
+        tts_fn = lambda text, out: _tts_via_svc(SVC_TTS_URL, text, out)  # noqa: E731
+        tts_label = "TTS"
+    else:
+        if not _voice_present(voice_dir, voice_name):
+            return JSONResponse(
+                {"error": f"Piper voice '{voice_name}' 없음 — TTS 카드에서 '보이스 다운로드'(--download)를 먼저 실행하세요."},
+                status_code=503)
+        tts_fn = lambda text, out: _tts_to_wav(_get_voice(voice_dir, voice_name), text, out)  # noqa: E731
+        tts_label = "TTS"
 
     # 턴은 한 번에 하나씩(모델/대화 history 충돌 방지 — 로컬 단일 사용자 가정)
     with _LIVE_LOCK:
         try:
-            return _run_turn(in_path, stt_model, stt_compute, stt_device,
-                             voice_dir, voice_name, llm_cfg)
+            return _run_turn(in_path, stt_fn, llm_cfg, tts_fn, tts_label)
         except Exception as e:
             return JSONResponse({"error": f"처리 실패: {type(e).__name__}: {e}"}, status_code=500)

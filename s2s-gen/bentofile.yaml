@@ -1,0 +1,18 @@
+# BentoML 빌드 정의 — `bentoml build` 후 `bentoml containerize` 로 Docker 이미지 생성
+service: "bento_service:CSMTTS"
+name: "csm-tts"
+labels:
+  owner: multimodal-serving-lab
+  modality: s2s
+include:
+  - "bento_service.py"
+  - "csm_runtime.py"
+  - "config.yaml"
+# 주의: CSM repo(generator.py/models.py 등)와 가중치는 외부 clone(CSM_DIR)·HF 게이트라 번들하지 않는다.
+# containerize 후 실행 시 CSM_DIR 를 마운트하고 HF 토큰을 주입해야 한다(가중치는 첫 기동 시 HF 에서 받음).
+python:
+  requirements_txt: "./requirements-csm.txt"
+envs:
+  - name: CSM_DIR
+  - name: CSM_DEVICE
+  - name: HF_TOKEN

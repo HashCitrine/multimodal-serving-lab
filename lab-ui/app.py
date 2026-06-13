@@ -1095,6 +1095,99 @@ def moshi_stop() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 모델 서비스(BentoML) 매니저 — 모델을 1회 로드·상주시키는 서비스를 기동/정지/상태.
+# stt/tts/csm 을 같은 패턴으로 띄워 "인프로세스 vs 서빙" 지연을 실측한다. csm-tts 는 특히
+# 로드가 무거워(매 턴 재로드 불가) 상주 서비스가 저지연의 핵심이다. serve/moshi 런처와 동형.
+# (bentoml serve 는 uv 부모 + 서버 자식 구조 → start_new_session + killpg 로 그룹 종료.)
+# ---------------------------------------------------------------------------
+SERVICES: dict[str, dict] = {
+    "whisper-stt": {"dir": "stt-gen", "target": "bento_service:WhisperSTT", "port": 3001, "extra": None},
+    "piper-tts":   {"dir": "tts-gen", "target": "bento_service:PiperTTS",   "port": 3002, "extra": None},
+    "csm-tts":     {"dir": "s2s-gen", "target": "bento_service:CSMTTS",     "port": 3003, "extra": "csm"},
+}
+SVC: dict[str, dict] = {
+    name: {"proc": None, "started_at": None, "log": deque(maxlen=LOG_TAIL)} for name in SERVICES
+}
+SVC_LOCK = threading.Lock()
+
+
+def _svc_url(name: str) -> str:
+    return f"http://127.0.0.1:{SERVICES[name]['port']}"
+
+
+def _svc_running(name: str) -> bool:
+    proc = SVC[name]["proc"]
+    return proc is not None and proc.poll() is None
+
+
+def _svc_up(name: str) -> bool:
+    """BentoML /readyz — 모델 로딩이 끝나 요청을 받을 수 있나(CSM 은 로드가 길다)."""
+    try:
+        return httpx.get(f"{_svc_url(name)}/readyz", timeout=0.6).status_code < 500
+    except Exception:
+        return False
+
+
+def _svc_drain(name: str, proc):
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        SVC[name]["log"].append(line.rstrip("\n"))
+
+
+def svc_start(name: str) -> dict:
+    spec = SERVICES[name]
+    with SVC_LOCK:
+        if _svc_running(name):
+            return {"status": "already_running", "url": _svc_url(name)}
+        SVC[name]["log"].clear()
+        extra = spec["extra"]
+        # `uv run [--extra X] bentoml serve <Class> --port <p>` — 해당 모달리티 venv 에서 모델 1회 로드.
+        cmd = ["uv", "run", *(["--extra", extra] if extra else []),
+               "bentoml", "serve", spec["target"], "--port", str(spec["port"])]
+        # lab-ui 가 (루트 .venv 에서) 실행 중이면 VIRTUAL_ENV 가 상속돼 bentoml 워커가 그 venv 로 뜬다.
+        # → s2s-gen 의 csm extra(torch 2.4 등)가 아닌 루트 venv 가 잡혀 로드 실패. VIRTUAL_ENV 를 제거해
+        #   uv 가 각 프로젝트(cwd)의 .venv 를 쓰도록 강제한다.
+        env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+        proc = subprocess.Popen(
+            cmd, cwd=str(ROOT / spec["dir"]),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, start_new_session=True, env=env,
+        )
+        SVC[name]["proc"] = proc
+        SVC[name]["started_at"] = time.time()
+        threading.Thread(target=_svc_drain, args=(name, proc), daemon=True).start()
+        return {"status": "starting", "url": _svc_url(name)}
+
+
+def svc_stop(name: str) -> dict:
+    with SVC_LOCK:
+        proc = SVC[name]["proc"]
+        if proc is None or proc.poll() is not None:
+            SVC[name]["proc"] = None
+            return {"status": "stopped"}
+        _kill_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc, signal.SIGKILL)
+        SVC[name]["proc"] = None
+        return {"status": "stopped"}
+
+
+def svc_status(name: str) -> dict:
+    return {
+        "name": name,
+        "running": _svc_running(name),   # uv/서버 프로세스 살아있나
+        "up": _svc_up(name),             # /readyz 응답하나(모델 로드 끝나 요청 가능)
+        "url": _svc_url(name),
+        "port": SERVICES[name]["port"],
+        "extra": SERVICES[name]["extra"],
+        "started_at": SVC[name]["started_at"],
+        "log": list(SVC[name]["log"]),
+    }
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 앱
 # ---------------------------------------------------------------------------
 app = FastAPI(title="multimodal-serving-lab · lab-ui")
@@ -1287,6 +1380,35 @@ async def api_moshi_status():
         "started_at": MOSHI["started_at"],
         "log": list(MOSHI["log"]),
     }
+
+
+# --- 모델 서비스(BentoML: whisper-stt / piper-tts / csm-tts) ---
+@app.get("/api/svc")
+async def api_svc_list():
+    return {"services": [svc_status(name) for name in SERVICES]}
+
+
+def _svc_or_404(name: str):
+    if name not in SERVICES:
+        raise HTTPException(404, f"알 수 없는 서비스: {name} (가능: {', '.join(SERVICES)})")
+
+
+@app.post("/api/svc/{name}/start")
+async def api_svc_start(name: str):
+    _svc_or_404(name)
+    return svc_start(name)
+
+
+@app.post("/api/svc/{name}/stop")
+async def api_svc_stop(name: str):
+    _svc_or_404(name)
+    return svc_stop(name)
+
+
+@app.get("/api/svc/{name}/status")
+async def api_svc_status(name: str):
+    _svc_or_404(name)
+    return svc_status(name)
 
 
 @app.get("/api/serve/proxy/{kind}")

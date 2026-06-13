@@ -848,6 +848,60 @@ function buildMoshiCard(){
   return card;
 }
 
+// 모델 서비스(BentoML) — 모델을 1회 로드해 상주시키는 서비스(whisper-stt/piper-tts/csm-tts)를
+// 기동/정지/상태. Live Voice의 serving_mode=served(STT/Piper) 또는 s2s=csm(csm-tts)이 이들을 호출한다.
+function buildServicesCard(){
+  const card = $('div','card');
+  const title = $('h2', null, ''); title.append($('span', null, '모델 서비스 (BentoML)')); card.append(title);
+  card.append($('p','note','모델을 1회 로드해 상주시키는 BentoML 서비스입니다. Live Voice에서 '
+    + 'serving_mode=served(STT/TTS) 또는 s2s=csm(csm-tts)을 쓰려면 먼저 여기서 기동하세요.'));
+  card.append($('p','hints','csm-tts는 외부 CSM 가중치가 필요하고 첫 기동 시 로딩에 수십 초 걸립니다. '
+    + '경량 모델(whisper-stt/piper-tts)은 인프로세스 대비 HTTP 오버헤드가 있어 "인프로세스 vs 서빙" 비교 실측용입니다.'));
+
+  const services = [
+    {name:'whisper-stt', label:'STT · whisper (:3001)'},
+    {name:'piper-tts',   label:'TTS · piper (:3002)'},
+    {name:'csm-tts',     label:'TTS · CSM 표현형 (:3003)'},
+  ];
+  const rows = {};
+  let poll = null;
+  services.forEach(s=>{
+    const row = $('div','row');
+    const startBtn = $('button', null, '● 기동');
+    const stopBtn = $('button','sec','■ 정지'); stopBtn.disabled = true;
+    const status = $('span','status','');
+    row.append($('span','muted', s.label), startBtn, stopBtn, status); card.append(row);
+    rows[s.name] = {startBtn, stopBtn, status};
+    startBtn.onclick = async ()=>{
+      startBtn.disabled = true; status.textContent='기동 요청 중…'; status.className='status running';
+      const res = await jpost(`/api/svc/${s.name}/start`, {});
+      if (!res.ok){ status.textContent='오류: '+(res.data.detail||res.status); status.className='status failed'; startBtn.disabled=false; return; }
+      if (!poll) poll = setInterval(refresh, 2000); refresh();
+    };
+    stopBtn.onclick = async ()=>{
+      stopBtn.disabled = true; status.textContent='정지 중…'; status.className='status';
+      await jpost(`/api/svc/${s.name}/stop`, {}); refresh();
+    };
+  });
+  const logBox = $('pre','log',''); card.append(logBox);
+
+  async function refresh(){
+    const r = await jget('/api/svc'); if (!r) return;
+    (r.services||[]).forEach(st=>{
+      const el = rows[st.name]; if (!el) return;
+      el.startBtn.disabled = st.running; el.stopBtn.disabled = !st.running;
+      if (st.running && !st.up){ el.status.textContent='기동 중… (모델 로딩)'; el.status.className='status running'; }
+      else if (st.up){ el.status.textContent='실행 중'; el.status.className='status succeeded'; }
+      else { el.status.textContent='정지됨'; el.status.className='status'; }
+    });
+    const logs = (r.services||[]).filter(s=>s.log && s.log.length)
+      .map(s=>`# ${s.name}\n`+s.log.slice(-12).join('\n')).join('\n\n');
+    if (logs) logBox.textContent = logs;
+  }
+  refresh();
+  return card;
+}
+
 (async function init(){
   const h = await jget('/api/health');
   document.getElementById('root').textContent = h.root;
@@ -878,6 +932,17 @@ function buildMoshiCard(){
     lvTab.classList.add('active'); lvCard.classList.add('active');
   };
   tabsEl.append(lvTab); cardsEl.append(lvCard);
+
+  // 모델 서비스(BentoML) 탭(수작업)
+  const svcTab = $('button','tab');
+  svcTab.append($('span','dot ready'), $('span', null, '모델 서비스'));
+  const svcCard = buildServicesCard();
+  svcTab.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.card').forEach(x=>x.classList.remove('active'));
+    svcTab.classList.add('active'); svcCard.classList.add('active');
+  };
+  tabsEl.append(svcTab); cardsEl.append(svcCard);
 
   // Moshi (full-duplex 라이브) 탭(수작업)
   const mTab = $('button','tab');

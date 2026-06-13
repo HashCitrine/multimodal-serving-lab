@@ -667,6 +667,60 @@ async function buildLiveVoiceCard(){
   const respWrap = $('div','section'); respWrap.append($('h3', null, '응답 음성'));
   const respAudio = document.createElement('audio'); respAudio.controls = true; respAudio.style.width='100%';
   respWrap.append(respAudio); card.append(respWrap);
+
+  // --- 아바타(viseme-lite): 응답 오디오 진폭으로 입모양을 구동하는 오디오-only 레이어 ---
+  // sample/avatar.md의 HeadAudio(오디오만으로 립싱크) 방식 축약 — 음성 파이프라인과 독립이라
+  // cascade·s2s 출력 모두 동일하게 커버한다(서버 립싱크 모델 없이 거의 무지연).
+  const avatarWrap = $('div','section');
+  const avatarHead = $('div','row');
+  const avatarToggle = document.createElement('input'); avatarToggle.type='checkbox'; avatarToggle.id='lv-avatar-tog';
+  const avatarLabel = document.createElement('label'); avatarLabel.htmlFor='lv-avatar-tog';
+  avatarLabel.textContent=' 아바타 표시 (응답 음성에 입모양 동기)';
+  avatarHead.append($('h3', null, '아바타'), avatarToggle, avatarLabel);
+  const avatarCanvas = document.createElement('canvas'); avatarCanvas.width=220; avatarCanvas.height=220;
+  avatarCanvas.style.display='none'; avatarCanvas.style.background='#0b1020'; avatarCanvas.style.borderRadius='12px';
+  avatarWrap.append(avatarHead, avatarCanvas); card.append(avatarWrap);
+
+  let avatarCtx=null, avatarAnalyser=null, avatarData=null, avatarRAF=null;
+  function ensureAvatarAudio(){
+    if (avatarAnalyser) return;  // createMediaElementSource는 엘리먼트당 1회만 가능
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      avatarCtx = new AC();
+      const src = avatarCtx.createMediaElementSource(respAudio);
+      avatarAnalyser = avatarCtx.createAnalyser(); avatarAnalyser.fftSize = 1024;
+      avatarData = new Uint8Array(avatarAnalyser.fftSize);
+      src.connect(avatarAnalyser); avatarAnalyser.connect(avatarCtx.destination); // 그래프 경유해도 재생 유지
+    } catch(e){ /* 미지원/1회 제약 — 정적 얼굴만 표시 */ }
+  }
+  function drawAvatar(){
+    const g = avatarCanvas.getContext('2d'); const W=avatarCanvas.width, H=avatarCanvas.height;
+    let amp = 0;
+    if (avatarAnalyser){
+      avatarAnalyser.getByteTimeDomainData(avatarData);
+      let sum=0; for (let i=0;i<avatarData.length;i++){ const v=(avatarData[i]-128)/128; sum+=v*v; }
+      amp = Math.sqrt(sum/avatarData.length);
+    }
+    g.clearRect(0,0,W,H);
+    g.fillStyle='#ffd9b3'; g.beginPath(); g.ellipse(W/2,H/2,64,80,0,0,Math.PI*2); g.fill();   // 머리
+    g.fillStyle='#222'; g.beginPath();
+    g.arc(W/2-24,H/2-18,6,0,Math.PI*2); g.arc(W/2+24,H/2-18,6,0,Math.PI*2); g.fill();           // 눈
+    const open = Math.min(36, 3 + amp*180);                                                       // 입(진폭→개구)
+    g.fillStyle='#7a2b2b'; g.beginPath(); g.ellipse(W/2,H/2+34,24,open/2,0,0,Math.PI*2); g.fill();
+    avatarRAF = requestAnimationFrame(drawAvatar);
+  }
+  avatarToggle.onchange = ()=>{
+    if (avatarToggle.checked){
+      avatarCanvas.style.display='block';
+      ensureAvatarAudio();
+      if (avatarCtx && avatarCtx.state==='suspended') avatarCtx.resume().catch(()=>{});
+      if (!avatarRAF) drawAvatar();
+    } else {
+      avatarCanvas.style.display='none';
+      if (avatarRAF){ cancelAnimationFrame(avatarRAF); avatarRAF=null; }
+    }
+  };
+
   const metricBox = $('div','metrics'); card.append(metricBox);
   const summary = $('div','summary'); card.append(summary);
 
@@ -741,6 +795,59 @@ async function buildLiveVoiceCard(){
   return card;
 }
 
+// Moshi (full-duplex 라이브) — 파일→파일이 없어 자체 웹 UI(:8998)에서 실시간 대화.
+// lab-ui는 moshi_mlx.local_web 서버의 기동/정지/링크만 관리한다(serve 카드와 동일 패턴).
+function buildMoshiCard(){
+  const card = $('div','card');
+  const title = $('h2', null, ''); title.append($('span', null, 'Moshi (full-duplex 라이브)')); card.append(title);
+  card.append($('p','note','음성을 직접 처리하는 풀듀플렉스 모델입니다. 말 끊고 들어가기·맞장구가 자연스럽습니다. '
+    + '파일→파일이 아니라 실시간 대화라, 아래에서 서버를 켠 뒤 Moshi 자체 웹 UI에서 마이크로 대화합니다.'));
+  card.append($('p','hints','첫 기동 시 moshi_mlx(Python 3.12) 환경과 가중치(kyutai/moshika-mlx-q4, 수 GB)를 받습니다 — 시간이 걸립니다.'));
+
+  const row = $('div','row');
+  const qsel = document.createElement('select');
+  [['4','q4 (가벼움·기본)'],['8','q8 (정확)']].forEach(([v,l])=>{ const o=document.createElement('option'); o.value=v; o.textContent=l; qsel.append(o); });
+  const startBtn = $('button', null, '● Moshi 기동');
+  const stopBtn = $('button','sec','■ 정지'); stopBtn.disabled = true;
+  row.append($('span','muted','양자화:'), qsel, startBtn, stopBtn); card.append(row);
+
+  const statusEl = $('div','status',''); card.append(statusEl);
+  const linkRow = $('div','row');
+  const link = document.createElement('a'); link.href = 'http://localhost:8998'; link.target = '_blank';
+  link.textContent = 'http://localhost:8998 열기'; link.style.display='none';
+  linkRow.append($('span','muted','대화 화면:'), link); card.append(linkRow);
+  const logBox = $('pre','log',''); card.append(logBox);
+
+  let poll = null;
+  function setRunning(running, webUp){
+    startBtn.disabled = running; stopBtn.disabled = !running; qsel.disabled = running;
+    link.style.display = webUp ? 'inline' : 'none';
+  }
+  async function refresh(){
+    const r = await jget('/api/moshi/status');
+    if (!r) return;
+    setRunning(r.running, r.web_up);
+    if (r.running && !r.web_up) statusEl.textContent = '기동 중… (가중치 로딩/다운로드 대기 — :8998 준비되면 링크가 보입니다)', statusEl.className='status running';
+    else if (r.web_up) statusEl.textContent = '실행 중 — http://localhost:8998 에서 대화하세요.', statusEl.className='status succeeded';
+    else statusEl.textContent = '정지됨', statusEl.className='status';
+    if (r.log && r.log.length) logBox.textContent = r.log.slice(-40).join('\n');
+  }
+  startBtn.onclick = async ()=>{
+    startBtn.disabled = true; statusEl.textContent='기동 요청 중…'; statusEl.className='status running';
+    const res = await jpost('/api/moshi/start', {quant: Number(qsel.value)});
+    if (!res.ok){ statusEl.textContent='오류: '+(res.data.detail||res.status); statusEl.className='status failed'; startBtn.disabled=false; return; }
+    if (!poll) poll = setInterval(refresh, 2000);
+    refresh();
+  };
+  stopBtn.onclick = async ()=>{
+    stopBtn.disabled = true; statusEl.textContent='정지 중…'; statusEl.className='status';
+    await jpost('/api/moshi/stop', {});
+    refresh();
+  };
+  refresh();
+  return card;
+}
+
 (async function init(){
   const h = await jget('/api/health');
   document.getElementById('root').textContent = h.root;
@@ -771,6 +878,17 @@ async function buildLiveVoiceCard(){
     lvTab.classList.add('active'); lvCard.classList.add('active');
   };
   tabsEl.append(lvTab); cardsEl.append(lvCard);
+
+  // Moshi (full-duplex 라이브) 탭(수작업)
+  const mTab = $('button','tab');
+  mTab.append($('span','dot ready'), $('span', null, 'Moshi 라이브'));
+  const mCard = buildMoshiCard();
+  mTab.onclick = ()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    document.querySelectorAll('.card').forEach(x=>x.classList.remove('active'));
+    mTab.classList.add('active'); mCard.classList.add('active');
+  };
+  tabsEl.append(mTab); cardsEl.append(mCard);
 })();
 </script>
 </body>

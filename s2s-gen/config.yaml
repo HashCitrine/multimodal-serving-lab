@@ -1,0 +1,35 @@
+# S2S(speech-to-speech) 설정 — 음성 네이티브 모델 vs 캐스케이드 비교
+
+backend: "cascade"     # cascade(STT→LLM→TTS 기준선) | csm(STT→LLM→CSM 표현형 TTS)
+                       # moshi 는 full-duplex 라이브 전용 → lab-ui "Moshi" 카드/런처 사용(파일→파일 아님)
+device: "auto"         # auto(cuda→mps→cpu) | cpu | cuda | mps
+
+# --- cascade 기준선 (앞선 voice-agent 자산 재사용) ---------------------------
+stt:                                     # stt-gen (faster-whisper)
+  model: "base.en"
+  compute_type: "int8"
+  device: "auto"
+
+llm:                                     # llm-serve provider (OpenAI 호환)
+  base_url: "http://localhost:11434/v1"  # 로컬 Ollama / 클라우드면 vLLM base_url
+  api_key: "ollama"
+  model: "llama3.2:1b-instruct-q4_K_M"
+  system: "You are a concise, friendly tutor. Answer in 1-2 short sentences."
+  max_tokens: 80
+
+tts:                                     # tts-gen (Piper) — 입력 음성 합성·캐스케이드 출력에 사용
+  voice_dir: "../tts-gen/models"
+  voice: "en_US-lessac-medium"
+
+# --- csm (Sesame CSM-1b, 표현형 TTS 캐스케이드) ------------------------------
+# CSM 은 단독 S2S가 아니라 conversational TTS. cascade 의 STT+LLM 을 쓰고 TTS만 CSM 으로 교체한다.
+# 준비: git clone SesameAILabs/csm → csm_dir, huggingface-cli login + 게이트 동의
+#       (sesame/csm-1b, meta-llama/Llama-3.2-1B), uv sync --extra csm. CSM_DIR 환경변수도 인식.
+csm_dir: "../_external/csm"   # README 안내 clone 위치(미존재 시 diagnostics가 안내)
+csm_speaker: 0         # CSM speaker id
+csm_max_audio_ms: 20000
+
+# --- moshi (Kyutai, full-duplex 라이브 전용) --------------------------------
+# moshi 는 파일→파일 오프라인 API가 없어 여기 backend 로는 실행하지 않는다.
+# 로컬 실행은 라이브 웹 데모: lab-ui "Moshi" 카드(기동) 또는
+#   uv run --python 3.12 --with moshi_mlx python -m moshi_mlx.local_web -q 4  → http://localhost:8998

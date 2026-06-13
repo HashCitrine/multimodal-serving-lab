@@ -12,7 +12,7 @@ tts:                                        # tts-gen 보이스 재사용
   use_cuda: false                           # lip-sync CUDA와 분리. onnxruntime-gpu 준비 시에만 true
 
 lipsync:
-  backend: "static"      # static(ffmpeg) | wav2lip(외부 모델)
+  backend: "static"      # static(ffmpeg) | wav2lip(외부 모델) | musetalk(외부 모델, 실시간·GPU)
   ffmpeg: "ffmpeg"
   device: "auto"         # auto(cuda→mps→cpu) | cuda | mps | cpu
 
@@ -26,3 +26,9 @@ lipsync:
   nosmooth: false
   # fps: 25
   # gpu_id: 0
+
+  # MuseTalk(실시간 립싱크, GPU 권장) 사용 시 외부 repo/체크포인트 경로를 주입한다.
+  # 환경변수 MUSETALK_DIR / MUSETALK_CKPT 도 인식한다.
+  # musetalk_dir: "../../_external/MuseTalk"
+  # musetalk_ckpt: "../../_external/MuseTalk/models"
+  # bbox_shift: 0          # 입 영역 보정(±). 입모양이 어긋나면 먼저 조정.

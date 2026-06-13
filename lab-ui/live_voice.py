@@ -54,7 +54,14 @@ _METRICS: dict[str, tuple[str, str, str, str]] = {
     "tts_ms": ("TTS", "ms", "응답 텍스트를 음성으로 합성하는 시간입니다.", "낮을수록 빠릅니다."),
     "bottleneck": ("병목 단계", "", "한 턴에서 가장 오래 걸린 단계입니다.", "최적화 우선순위를 보여줍니다."),
     "bottleneck_pct": ("병목 비중", "%", "전체 시간 중 병목 단계가 차지한 비율입니다.", "높을수록 해당 단계 영향이 큽니다."),
+    "ttfa_ms": ("TTFA", "ms", "입력 종료부터 첫 응답 오디오까지의 시간입니다.", "낮을수록 대화 반응성이 좋습니다."),
+    "rtf": ("RTF", "", "응답 처리 시간 / 응답 음성 길이입니다.", "1보다 작으면 실시간보다 빠릅니다."),
 }
+
+# S2S 모드 백엔드 — 파일→파일(턴제)로 동작하는 것만. moshi(full-duplex)는 라이브 전용이라 제외.
+S2S_BACKENDS = ["csm"]
+PIPELINE_MODES = ["cascade", "s2s"]
+S2S_GEN_DIR = ROOT / "s2s-gen"
 
 # --- 프로세스 내 상태(모델 캐시 + 대화 메모리) ---
 _STT_CACHE: dict[tuple, Any] = {}  # (model, compute_type, device) -> WhisperModel
@@ -193,6 +200,85 @@ def _llm_chat_stream(llm_cfg: dict, messages: list[dict]):
         return answer.strip(), ttft or 0.0, time.perf_counter() - t0
 
 
+def _extract_s2s_error(out: str) -> str:
+    """s2s.py 실패 출력에서 사람이 읽을 한 줄 메시지를 뽑는다(미준비 항목/RuntimeError)."""
+    import re
+    m = re.search(r"RuntimeError:\s*(.+)", out)
+    if m:
+        return m.group(1).strip()
+    items = re.findall(r"^\s*-\s*(.+)$", out, re.M)  # "백엔드가 아직 준비되지 않았습니다" 불릿
+    if items:
+        return " / ".join(i.strip() for i in items[:4])
+    tail = [l for l in out.splitlines() if l.strip()][-1:]
+    return tail[0].strip() if tail else "S2S 실행 실패"
+
+
+def _run_s2s_turn(in_path: Path, s2s_backend: str, device: str, tts_cfg: dict):
+    """한 S2S 턴 — s2s-gen CLI 를 그 venv 에서 subprocess 로 실행.
+
+    Live Voice 의 cascade 는 인프로세스(저지연)지만, csm 은 torch/CSM 의존성이 lab-ui venv 가
+    아니라 s2s-gen venv(`--extra csm`)에 있다. 따라서 in-process import 대신
+    `uv run --extra csm python s2s.py --backend <b> --audio <wav>` 로 올바른 환경에서 실행하고,
+    생성된 wav(`s2s-gen/outputs/answer_<b>.wav`)를 가져와 서빙한다. csm_dir 등은 s2s-gen/config.yaml
+    이 제공한다. 모델을 매 턴 로드하므로 csm 턴은 느리다(빠른 대화는 cascade 사용). _LIVE_LOCK 보유 중 호출.
+    """
+    global _LIVE_TURN
+    import re
+    import shutil
+    import subprocess
+
+    cmd = ["uv", "run", "--extra", "csm", "python", "s2s.py",
+           "--backend", s2s_backend, "--audio", str(in_path)]
+    try:
+        r = subprocess.run(cmd, cwd=str(S2S_GEN_DIR), capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return {
+            "turn_id": None, "transcript": "", "answer": None, "audio_url": None,
+            "input_audio_s": None, "output_audio_s": None,
+            "note": f"S2S '{s2s_backend}' 처리 시간 초과(>600s). csm 은 무거우니 'S2S' 카드 또는 cascade 를 쓰세요.",
+            "metrics": _label({}),
+        }
+    out = (r.stdout or "") + "\n" + (r.stderr or "")
+    if r.returncode != 0:
+        return {
+            "turn_id": None, "transcript": "", "answer": None, "audio_url": None,
+            "input_audio_s": None, "output_audio_s": None,
+            "note": f"S2S '{s2s_backend}' 준비/실행 실패 — {_extract_s2s_error(out)}",
+            "metrics": _label({}),
+        }
+
+    def g(pat):
+        m = re.search(pat, out)
+        return m.group(1) if m else None
+
+    src = S2S_GEN_DIR / "outputs" / f"answer_{s2s_backend}.wav"
+    _LIVE_TURN += 1
+    turn_id = _LIVE_TURN
+    LIVE_OUT.mkdir(parents=True, exist_ok=True)
+    audio_url = None
+    if src.exists():
+        shutil.copyfile(src, LIVE_OUT / f"live_{turn_id}.wav")  # 기존 artifacts 라우트로 서빙
+        audio_url = f"/api/artifacts/voice-agent/live_{turn_id}.wav"
+
+    raw = {}
+    if g(r"TTFA\s*:\s*([0-9.]+)\s*ms"):
+        raw["ttfa_ms"] = round(float(g(r"TTFA\s*:\s*([0-9.]+)\s*ms")))
+    if g(r"E2E\s*:\s*([0-9.]+)\s*ms"):
+        raw["e2e_ms"] = round(float(g(r"E2E\s*:\s*([0-9.]+)\s*ms")))
+    if g(r"RTF\s*:\s*([0-9.]+)"):
+        raw["rtf"] = round(float(g(r"RTF\s*:\s*([0-9.]+)")), 3)
+    out_s = g(r"\[응답 음성\]\s*([0-9.]+)s")
+    return {
+        "turn_id": turn_id,
+        "transcript": g(r'\[인식\]\s*"(.*?)"') or "(음성 입력)",
+        "answer": g(r'\[응답\]\s*"(.*?)"') or f"(CSM 음성 응답 — {s2s_backend})",
+        "audio_url": audio_url,
+        "input_audio_s": None,
+        "output_audio_s": float(out_s) if out_s else None,
+        "metrics": _label(raw),
+    }
+
+
 def _run_turn(in_path: Path, stt_model: str, stt_compute: str, stt_device: str,
               voice_dir: Path, voice_name: str, llm_cfg: dict):
     """한 대화 턴: STT → LLM(멀티턴) → TTS. _LIVE_LOCK 보유 상태에서만 호출."""
@@ -320,6 +406,12 @@ def options():
                 "default": default, "help": help_, "impact": impact}
 
     controls = [
+        ctl("pipeline_mode", PIPELINE_MODES, "cascade",
+            "음성 응답 파이프라인 방식입니다.",
+            "cascade는 STT→LLM→TTS(인프로세스, 빠름·관찰가능). s2s는 음성 네이티브 모델(아래 backend)로 단계 없는 응답을 시도합니다."),
+        ctl("s2s_backend", S2S_BACKENDS, "csm",
+            "s2s 모드에서 쓸 음성 모델입니다.",
+            "csm(Sesame, 표현형 TTS)은 외부 가중치가 필요합니다. 미준비 시 설치 안내가 표시됩니다. cascade 모드에서는 무시됩니다. moshi(풀듀플렉스)는 'Moshi 라이브' 카드를 쓰세요."),
         ctl("model", STT_MODELS, stt_cfg.get("model", "base.en"),
             "faster-whisper STT 모델 크기입니다.",
             "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다."),
@@ -362,6 +454,8 @@ def turn(
     voice: Optional[str] = Form(None),
     llm_model: Optional[str] = Form(None),
     system: Optional[str] = Form(None),
+    pipeline_mode: Optional[str] = Form(None),
+    s2s_backend: Optional[str] = Form(None),
 ):
     # 동기 def → FastAPI가 스레드풀에서 실행(블로킹 파이프라인이 이벤트 루프를 막지 않음).
     suffix = Path(audio.filename or "").suffix.lower()
@@ -382,6 +476,18 @@ def turn(
     except Exception as e:
         return JSONResponse({"error": f"voice-agent/config.yaml 로드 실패: {e}"}, status_code=500)
     stt_cfg, llm_cfg, tts_cfg = cfg.get("stt", {}), cfg.get("llm", {}), cfg.get("tts", {})
+
+    # S2S 모드 — 음성 네이티브 backend(moshi/csm)에 위임. cascade와 달리 STT/LLM/TTS·Ollama·voice가
+    # 불필요하다(backend가 음성→음성을 직접 처리). 한 번에 하나의 턴만(모델 충돌 방지).
+    if (pipeline_mode or "cascade") == "s2s":
+        s2s_dev = device or cfg.get("device", "auto")
+        s2s_name = s2s_backend or S2S_BACKENDS[0]
+        with _LIVE_LOCK:
+            try:
+                return _run_s2s_turn(in_path, s2s_name, s2s_dev, tts_cfg)
+            except Exception as e:
+                return JSONResponse({"error": f"S2S 처리 실패: {type(e).__name__}: {e}"}, status_code=500)
+
     if llm_model:  # UI에서 고른 LLM 모델로 그 턴만 override(base_url/think는 config 유지)
         llm_cfg = {**llm_cfg, "model": llm_model}
     if system and system.strip():  # UI에서 편집한 시스템 프롬프트로 override(비우면 config 기본값)

@@ -1,6 +1,6 @@
 # avatar-gen — 토킹헤드/립싱크 아바타 파이프라인
 
-`text →(LLM)→ TTS →(lip-sync)→ mp4` 를 한 파이프라인으로 묶는다. LLM은 OpenAI 호환 provider, TTS는 Piper, 립싱크는 교체형 backend를 사용한다. `backend=static`은 정지 영상 폴백이고, `backend=wav2lip`은 외부 Wav2Lip repo/checkpoint를 호출한다.
+`text →(LLM)→ TTS →(lip-sync)→ mp4` 를 한 파이프라인으로 묶는다. LLM은 OpenAI 호환 provider, TTS는 Piper, 립싱크는 교체형 backend를 사용한다. `backend=static`은 정지 영상 폴백, `backend=wav2lip`은 외부 Wav2Lip repo/checkpoint, `backend=musetalk`은 외부 MuseTalk(잠재공간 인페인팅 기반 실시간 립싱크, GPU 권장) repo/checkpoint를 호출한다.
 
 모델 파일, 얼굴 입력, 오디오, 생성 mp4는 저장소에 포함하지 않는다. Wav2Lip 오픈소스 모델은 연구/개인 실험 용도로만 다룬다.
 
@@ -42,6 +42,22 @@ python inference.py \
 
 `config.yaml`의 `pads`, `resize_factor`, `nosmooth`, `fps`, `gpu_id`를 통해 inference 옵션을 넘길 수 있다. 입 위치가 어긋나면 `pads`와 `nosmooth`를 먼저 조정한다.
 
+## MuseTalk 준비 (실시간 립싱크, GPU)
+
+MuseTalk 본체와 weights도 별도 설치하고 공개 repo에는 경로만 주입한다.
+
+- repo: `TMElyralab/MuseTalk`
+- checkpoint: `models/`(musetalk·sd-vae·whisper 등 — repo 안내 스크립트로 다운로드)
+- 시스템 dependency: `ffmpeg`, CUDA GPU(실시간 30fps+는 V100급)
+
+```bash
+export MUSETALK_DIR=/path/to/MuseTalk
+export MUSETALK_CKPT=/path/to/MuseTalk/models
+uv run python pipeline.py --text "Hello, I am your tutor." --face /path/to/face.jpg --backend musetalk --device cuda
+```
+
+입모양이 어긋나면 `config.yaml`의 `bbox_shift`를 먼저 조정한다. Mac(MPS)에서는 실시간 보장이 어려워 `diagnostics()`가 준비 상태를 안내한다.
+
 ## 벤치
 
 `bench_avatar.py`는 같은 입력으로 audio length, TTS latency, lip-sync latency, lip-sync RTF, end-to-end latency, NVIDIA GPU peak memory를 측정한다.
@@ -58,13 +74,14 @@ uv run python bench_avatar.py --backend wav2lip --face /path/to/face.jpg --devic
 ```text
 avatar-gen/
 ├── pipeline.py        # text→LLM→TTS→lipsync, 단계별 latency 출력
-├── bench_avatar.py    # static/Wav2Lip backend latency·RTF·GPU memory 벤치
+├── bench_avatar.py    # static/Wav2Lip/MuseTalk backend latency·RTF·GPU memory 벤치
 ├── config.yaml        # llm/tts/lipsync backend 설정
 ├── pyproject.toml
 └── backends/
     ├── base.py        # LipSyncBackend 인터페이스
     ├── static.py      # ffmpeg 정지영상 폴백
-    └── wav2lip.py     # 외부 Wav2Lip 셸아웃
+    ├── wav2lip.py     # 외부 Wav2Lip 셸아웃
+    └── musetalk.py    # 외부 MuseTalk 셸아웃(실시간·GPU)
 ```
 
 ## 위치 설정

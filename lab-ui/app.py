@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """lab-ui — 멀티모달 서빙 랩 대시보드 (FastAPI).
 
-저장소의 8개 실험(serve/sd-gen/video-gen/tts-gen/stt-gen/llm-serve/voice-agent/
-avatar-gen)을 브라우저에서 실행·확인하는 얇은 레이어. 기존 CLI는 수정하지 않고,
+저장소의 9개 실험(serve/sd-gen/video-gen/tts-gen/stt-gen/llm-serve/voice-agent/
+avatar-gen/s2s-gen)을 브라우저에서 실행·확인하는 얇은 레이어. 기존 CLI는 수정하지 않고,
 target별 allowlist 인자만으로 subprocess를 실행해 로그·산출물을 보여준다.
 
 실행:
@@ -165,7 +165,19 @@ TARGETS: dict[str, dict] = {
         "params": {
             "prompt": P("--prompt", "str"),
             "text": P("--text", "str", default="Hello, I am your tutor."),
-            "backend": P("--backend", "choice", choices=["static", "wav2lip"], default="static"),
+            "backend": P("--backend", "choice", choices=["static", "wav2lip", "musetalk"], default="static"),
+            "device": P("--device", "choice", choices=["auto", "cuda", "mps", "cpu"], default="auto"),
+        },
+        "produces_files": True,
+    },
+    "s2s-gen": {
+        "label": "S2S (음성 네이티브 vs 캐스케이드)",
+        "dir": "s2s-gen",
+        "kind": "job",
+        "script": "s2s.py",
+        "params": {
+            "backend": P("--backend", "choice", choices=["cascade", "csm"], default="cascade"),
+            "ask": P("--ask", "str", default="How do you spell necessary?"),
             "device": P("--device", "choice", choices=["auto", "cuda", "mps", "cpu"], default="auto"),
         },
         "produces_files": True,
@@ -369,11 +381,25 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         },
         "backend": {
             "help": "토킹헤드 생성 방식입니다.",
-            "impact": "static은 정지 영상 검증용이고, wav2lip은 외부 모델로 실제 립싱크를 시도합니다.",
+            "impact": "static은 정지 영상 검증용, wav2lip/musetalk은 외부 모델로 실제 립싱크를 시도합니다(musetalk은 GPU 권장).",
         },
         "device": {
             "help": "립싱크 백엔드 실행 장치입니다.",
             "impact": "auto는 cuda, mps, cpu 순으로 가능한 장치를 고릅니다.",
+        },
+    },
+    "s2s-gen": {
+        "backend": {
+            "help": "음성 응답 파이프라인 방식입니다.",
+            "impact": "cascade는 STT→LLM→TTS 기준선(어디서나 동작), moshi/csm은 외부 음성 네이티브 모델로 단계 없는 S2S를 시도합니다.",
+        },
+        "ask": {
+            "help": "에이전트에게 물어볼 질문 텍스트입니다.",
+            "impact": "이 텍스트를 입력 음성으로 합성한 뒤 backend의 TTFA/E2E/RTF를 측정합니다.",
+        },
+        "device": {
+            "help": "음성 네이티브 백엔드 실행 장치입니다.",
+            "impact": "auto는 cuda, mps, cpu 순으로 고릅니다. moshi/csm은 cuda 권장입니다.",
         },
     },
 }
@@ -400,6 +426,7 @@ METRIC_HELP: dict[str, dict[str, str]] = {
     "llm_total_ms": {"help": "LLM 응답 생성 전체 시간입니다.", "direction": "낮을수록 빠릅니다."},
     "tts_ms": {"help": "응답 텍스트를 음성으로 합성하는 시간입니다.", "direction": "낮을수록 빠릅니다."},
     "e2e_ms": {"help": "사용자 발화 종료부터 응답 음성 생성까지의 전체 지연입니다.", "direction": "낮을수록 좋습니다."},
+    "ttfa_ms": {"help": "입력 종료부터 첫 응답 오디오가 나오기까지의 시간입니다.", "direction": "낮을수록 대화 반응성이 좋습니다."},
     "bottleneck": {"help": "한 턴에서 가장 오래 걸린 단계입니다.", "direction": "최적화 우선순위를 보여줍니다."},
     "bottleneck_pct": {"help": "전체 시간 중 병목 단계가 차지한 비율입니다.", "direction": "높을수록 해당 단계 영향이 큽니다."},
     "tts_s": {"help": "아바타 파이프라인의 음성 합성 시간입니다.", "direction": "낮을수록 빠릅니다."},
@@ -422,14 +449,18 @@ def outputs_dir(target: str) -> Path:
     return target_dir(target) / "outputs"
 
 
-def target_cmd(target: str) -> list[str]:
+def target_cmd(target: str, extra: Optional[str] = None) -> list[str]:
     """target을 실행하는 명령 prefix.
 
     각 서브 프로젝트는 uv 프로젝트(pyproject.toml + .python-version)다.
     `uv run`이 cwd(target dir)의 .venv를 자동 생성·동기화한 뒤 파이썬을 실행하므로,
     사용자는 별도 사전 준비 없이 첫 실행에서 의존성이 설치된다.
+
+    주의: `uv run` 은 매 실행마다 venv 를 lockfile(+지정 extra)에 맞춰 재동기화한다. 따라서
+    optional extra 가 필요한 백엔드(예: s2s-gen csm = torch)는 반드시 같은 `--extra` 로 실행해야
+    한다. extra 없이 실행하면 그 extra 패키지가 매번 제거된다(=torch 미설치 오류의 원인).
     """
-    return ["uv", "run", "python"]
+    return ["uv", "run", *(["--extra", extra] if extra else []), "python"]
 
 
 # ---------------------------------------------------------------------------
@@ -603,6 +634,8 @@ def parse_job_metrics(target: str, log: list[str]) -> tuple[dict[str, Any], list
             _parse_voice_line(line, metrics)
         elif target == "avatar-gen":
             _parse_avatar_line(line, metrics)
+        elif target == "s2s-gen":
+            _parse_s2s_line(line, metrics)
 
     return _label_metrics(target, metrics), rows
 
@@ -683,6 +716,25 @@ def _parse_avatar_line(line: str, metrics: dict[str, Any]) -> None:
         metrics["e2e_s"] = float(m.group(1))
 
 
+def _parse_s2s_line(line: str, metrics: dict[str, Any]) -> None:
+    m = re.search(r"\[backend\]\s+([A-Za-z0-9_-]+)", line)
+    if m:
+        metrics["backend"] = m.group(1)
+    patterns = [
+        (r"STT\s*:\s*([0-9.]+)\s*ms", "stt_ms"),
+        (r"LLM TTFT\s*:\s*([0-9.]+)\s*ms", "llm_ttft_ms"),
+        (r"LLM total\s*:\s*([0-9.]+)\s*ms", "llm_total_ms"),
+        (r"TTS\s*:\s*([0-9.]+)\s*ms", "tts_ms"),
+        (r"TTFA\s*:\s*([0-9.]+)\s*ms", "ttfa_ms"),
+        (r"E2E\s*:\s*([0-9.]+)\s*ms", "e2e_ms"),
+        (r"RTF\s*:\s*([0-9.]+)", "rtf"),
+    ]
+    for pattern, key in patterns:
+        m = re.search(pattern, line)
+        if m:
+            metrics[key] = float(m.group(1))
+
+
 def _parse_serve_bench_row(line: str) -> Optional[dict[str, Any]]:
     parts = line.split()
     if len(parts) != 7:
@@ -722,6 +774,7 @@ def _label_metrics(target: str, metrics: dict[str, Any]) -> dict[str, Any]:
         "llm_total_ms": "LLM total",
         "tts_ms": "TTS",
         "e2e_ms": "E2E",
+        "ttfa_ms": "TTFA",
         "bottleneck": "병목 단계",
         "bottleneck_pct": "병목 비중",
         "tts_s": "TTS 시간",
@@ -736,7 +789,7 @@ def _label_metrics(target: str, metrics: dict[str, Any]) -> dict[str, Any]:
     units = {
         "audio_s": "s", "synth_s": "s", "transcribe_s": "s", "total_s": "s",
         "ttft": "ms", "stt_ms": "ms", "llm_ttft_ms": "ms", "llm_total_ms": "ms",
-        "tts_ms": "ms", "e2e_ms": "ms", "tts_s": "s", "lipsync_s": "s", "e2e_s": "s",
+        "tts_ms": "ms", "e2e_ms": "ms", "ttfa_ms": "ms", "tts_s": "s", "lipsync_s": "s", "e2e_s": "s",
         "decode_tok_s": "tok/s", "realtime_x": "x", "bottleneck_pct": "%",
     }
     order = {
@@ -745,6 +798,7 @@ def _label_metrics(target: str, metrics: dict[str, Any]) -> dict[str, Any]:
         "llm-serve": ["ttft", "tokens", "decode_tok_s", "total_s"],
         "voice-agent": ["e2e_ms", "stt_ms", "llm_ttft_ms", "llm_total_ms", "tts_ms", "bottleneck", "bottleneck_pct"],
         "avatar-gen": ["backend", "audio_s", "tts_s", "lipsync_s", "lipsync_rtf", "e2e_s"],
+        "s2s-gen": ["backend", "ttfa_ms", "e2e_ms", "rtf", "stt_ms", "llm_ttft_ms", "llm_total_ms", "tts_ms"],
         "serve": ["avg_batch_size", "max_observed_batch", "total_batches"],
     }.get(target, list(metrics))
     return {
@@ -818,7 +872,7 @@ def preflight(target: str) -> dict:
                                   "(또는 카드 실행 시 첫 회 자동 설치 — 무거운 타깃은 시간이 걸립니다).",
     })
 
-    if target in ("tts-gen", "voice-agent", "avatar-gen"):
+    if target in ("tts-gen", "voice-agent", "avatar-gen", "s2s-gen"):
         vdir = ROOT / "tts-gen" / "models"
         v_ok = _voice_present(vdir, "en_US-lessac-medium")
         checks.append({
@@ -827,7 +881,7 @@ def preflight(target: str) -> dict:
             "hint": "" if v_ok else "TTS 카드에서 '보이스 다운로드'(--download)를 먼저 실행하세요.",
         })
 
-    if target in ("llm-serve", "voice-agent", "avatar-gen"):
+    if target in ("llm-serve", "voice-agent", "avatar-gen", "s2s-gen"):
         o_ok = _ollama_up()
         checks.append({
             "name": "Ollama",
@@ -836,7 +890,7 @@ def preflight(target: str) -> dict:
                                     "(예: ollama pull gemma4:12b-mlx).",
         })
 
-    if target in ("avatar-gen", "video-gen"):
+    if target in ("avatar-gen", "video-gen", "s2s-gen"):
         f_ok = shutil.which("ffmpeg") is not None
         checks.append({
             "name": "ffmpeg",
@@ -975,6 +1029,72 @@ def serve_stop() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Moshi (full-duplex 라이브) — moshi_mlx.local_web 웹 서버를 관리(serve 패턴 재사용).
+# Moshi는 파일→파일이 없어 s2s-gen backend로 못 돌리고, 자체 웹 UI(:8998)에서 실시간 대화한다.
+# 별도 3.12 환경이 필요하므로 `uv run --python 3.12 --with moshi_mlx`로 임시 환경에서 기동한다.
+# ---------------------------------------------------------------------------
+MOSHI_PORT = 8998
+MOSHI_URL = f"http://localhost:{MOSHI_PORT}"
+MOSHI: dict[str, Any] = {"proc": None, "started_at": None, "log": deque(maxlen=LOG_TAIL)}
+MOSHI_LOCK = threading.Lock()
+
+
+def _moshi_running() -> bool:
+    proc = MOSHI["proc"]
+    return proc is not None and proc.poll() is None
+
+
+def _moshi_web_up() -> bool:
+    try:
+        return httpx.get(MOSHI_URL, timeout=0.6).status_code < 500
+    except Exception:
+        return False
+
+
+def _moshi_drain(proc):
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        MOSHI["log"].append(line.rstrip("\n"))
+
+
+def moshi_start(quant: int = 4) -> dict:
+    with MOSHI_LOCK:
+        if _moshi_running():
+            return {"status": "already_running", "url": MOSHI_URL}
+        q = 8 if int(quant) == 8 else 4
+        MOSHI["log"].clear()
+        # uv가 Python 3.12를 자동 확보하고 moshi_mlx를 임시 설치해 웹 서버를 띄운다.
+        # 첫 기동 시 가중치(kyutai/moshika-mlx-q{q})를 HF에서 받는다(비게이트).
+        proc = subprocess.Popen(
+            ["uv", "run", "--python", "3.12", "--with", "moshi_mlx",
+             "python", "-m", "moshi_mlx.local_web", "-q", str(q)],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,
+            start_new_session=True,  # 그룹 단위 종료(uv 부모 + 서버 자식)
+        )
+        MOSHI["proc"] = proc
+        MOSHI["started_at"] = time.time()
+        threading.Thread(target=_moshi_drain, args=(proc,), daemon=True).start()
+        return {"status": "starting", "url": MOSHI_URL, "quant": q}
+
+
+def moshi_stop() -> dict:
+    with MOSHI_LOCK:
+        proc = MOSHI["proc"]
+        if proc is None or proc.poll() is not None:
+            MOSHI["proc"] = None
+            return {"status": "stopped"}
+        _kill_group(proc, signal.SIGTERM)
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc, signal.SIGKILL)
+        MOSHI["proc"] = None
+        return {"status": "stopped"}
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 앱
 # ---------------------------------------------------------------------------
 app = FastAPI(title="multimodal-serving-lab · lab-ui")
@@ -1053,7 +1173,10 @@ async def create_job(target: str, body: JobRequest):
     # (config의 server.port 변경 시 bench.py 기본값 8000과 어긋나는 것을 방지)
     if target == "serve":
         cli_args = ["--url", SERVE_URL, *cli_args]
-    cmd = [*target_cmd(target), TARGETS[target]["script"], *cli_args]
+    # s2s-gen csm 백엔드는 torch 등 csm extra 가 필요 → `uv run --extra csm` 로 실행해야
+    # uv 가 매 실행 시 그 패키지를 제거하지 않는다(cascade 는 가볍게 plain uv run).
+    extra = "csm" if (target == "s2s-gen" and (body.params or {}).get("backend") == "csm") else None
+    cmd = [*target_cmd(target, extra=extra), TARGETS[target]["script"], *cli_args]
     job = _new_job(target, cmd)
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()
     return {"job_id": job["id"], "cmd": cmd}
@@ -1138,6 +1261,31 @@ async def api_serve_status():
         "url": SERVE_URL,
         "started_at": SERVE["started_at"],
         "log": list(SERVE["log"]),
+    }
+
+
+class MoshiStart(BaseModel):
+    quant: int = 4
+
+
+@app.post("/api/moshi/start")
+async def api_moshi_start(body: MoshiStart = MoshiStart()):
+    return moshi_start(body.quant)
+
+
+@app.post("/api/moshi/stop")
+async def api_moshi_stop():
+    return moshi_stop()
+
+
+@app.get("/api/moshi/status")
+async def api_moshi_status():
+    return {
+        "running": _moshi_running(),     # uv/서버 프로세스 살아있나
+        "web_up": _moshi_web_up(),       # :8998 응답하나(가중치 로딩 끝나 대화 가능)
+        "url": MOSHI_URL,
+        "started_at": MOSHI["started_at"],
+        "log": list(MOSHI["log"]),
     }
 
 

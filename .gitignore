@@ -53,3 +53,5 @@ outputs/
 .env
 *.log
 .idea/
+
+sample

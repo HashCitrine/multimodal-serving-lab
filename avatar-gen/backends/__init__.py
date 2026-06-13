@@ -23,4 +23,14 @@ def build_backend(cfg: Dict[str, Any]) -> LipSyncBackend:
             fps=cfg.get("fps"),
             gpu_id=cfg.get("gpu_id"),
         )
-    raise ValueError(f"unknown lipsync backend '{name}' (static|wav2lip)")
+    if name == "musetalk":
+        from .musetalk import MuseTalkBackend
+        return MuseTalkBackend(
+            repo_dir=cfg.get("musetalk_dir", ""),
+            checkpoint=cfg.get("musetalk_ckpt", ""),
+            device=cfg.get("device", "auto"),
+            fps=cfg.get("fps"),
+            bbox_shift=cfg.get("bbox_shift"),
+            gpu_id=cfg.get("gpu_id"),
+        )
+    raise ValueError(f"unknown lipsync backend '{name}' (static|wav2lip|musetalk)")

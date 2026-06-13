@@ -15,7 +15,8 @@
 - `stt-gen/`: 음성 인식(faster-whisper) 서빙·최적화 — int8 양자화 RTF/WER/메모리, TTS↔STT 왕복
 - `llm-serve/`: LLM 서빙·양자화 최적화 — 로컬 Ollama(OpenAI 호환)↔클라우드 vLLM 전환 구조, 양자화/배칭 벤치
 - `voice-agent/`: STT→LLM→TTS 음성 에이전트 — 대화 턴 end-to-end 지연 예산 측정(병목: warm=STT, cold=LLM)
-- `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형
+- `s2s-gen/`: 음성 대화 파이프라인 비교 — cascade(STT→LLM→TTS) vs csm(TTS만 Sesame CSM 표현형, MPS) vs moshi(full-duplex 라이브, lab-ui 런처). 같은 축에서 TTFA·E2E·RTF 측정
+- `avatar-gen/`: 토킹헤드·립싱크 아바타 파이프라인(text→LLM→TTS→lip-sync) — 사전 스캐폴드, static 백엔드로 지금 동작·립싱크 모델 교체형(wav2lip/musetalk)
 - `lab-ui/`: 위 실험들을 브라우저에서 실행·확인하는 랩 대시보드(FastAPI) — 각 CLI를 allowlist 인자로 subprocess 실행, preflight로 준비 상태 안내
 - `docs/project-flow-and-terms.md`: 흐름·용어·실험 기록 문서 안내
 - `docs/project-flow.md`: 전체 실험 흐름·서브 프로젝트별 로직 해설

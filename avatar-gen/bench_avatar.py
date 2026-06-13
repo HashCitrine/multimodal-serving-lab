@@ -90,8 +90,8 @@ def run_case(args: argparse.Namespace, cfg: dict[str, Any], text: str, index: in
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Avatar/lip-sync latency and RTF benchmark")
-    ap.add_argument("--backend", default="wav2lip", choices=["static", "wav2lip"])
-    ap.add_argument("--face", help="Wav2Lip 품질 검증용 실제 얼굴 이미지/영상 경로")
+    ap.add_argument("--backend", default="wav2lip", choices=["static", "wav2lip", "musetalk"])
+    ap.add_argument("--face", help="립싱크 품질 검증용 실제 얼굴 이미지/영상 경로")
     ap.add_argument("--device", default="auto", help="auto | cuda | mps | cpu")
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=1)
@@ -103,8 +103,8 @@ def main() -> None:
     texts = args.text or DEFAULT_TEXTS
     cfg = load_config(args.config)
 
-    if args.backend == "wav2lip" and not args.face:
-        raise SystemExit("--backend wav2lip requires --face with a real face image or video")
+    if args.backend in ("wav2lip", "musetalk") and not args.face:
+        raise SystemExit(f"--backend {args.backend} requires --face with a real face image or video")
 
     print(f"backend={args.backend} device={args.device} runs={args.runs} warmup={args.warmup}")
 

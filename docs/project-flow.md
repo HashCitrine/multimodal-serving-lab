@@ -34,6 +34,7 @@
 | 6 | `llm-serve/` | LLM | OpenAI 호환 provider, 양자화/동시성 벤치 | Ollama/vLLM 전환 구조 |
 | 7 | `voice-agent/` | Speech/Text | STT to LLM to TTS 한 턴 지연 예산 | 대화형 latency breakdown |
 | 8 | `avatar-gen/` | Avatar Video | Text/LLM/TTS/lip-sync mp4 파이프라인 | talking head 통합 구조 |
+| 9 | `s2s-gen/` | Speech to Speech | 캐스케이드 vs 표현형 TTS(CSM) vs full-duplex(Moshi 라이브) | 지연·관찰가능성·표현력 트레이드오프 |
 
 ## 3. 큰 데이터 흐름
 
@@ -61,6 +62,10 @@ voice-agent
 
 avatar-gen
   prompt/text -> LLM optional -> TTS wav -> lip-sync backend -> mp4
+
+s2s-gen
+  in_wav -> backend (cascade | csm) -> out_wav + TTFA / E2E / RTF
+  moshi(full-duplex) -> moshi_mlx.local_web :8998 라이브 대화 (파일→파일 아님)
 ```
 
 ## 4. 서브 프로젝트별 로직 흐름
@@ -367,7 +372,7 @@ quant tags(q4, q8, fp16)
 | 항목 | 내용 |
 |---|---|
 | 목적 | 말하는 아바타 영상 생성 파이프라인 검증 |
-| 핵심 파일 | `pipeline.py`, `backends/base.py`, `backends/static.py`, `backends/wav2lip.py` |
+| 핵심 파일 | `pipeline.py`, `backends/base.py`, `backends/static.py`, `backends/wav2lip.py`, `backends/musetalk.py` |
 | 입력 | `--text` 또는 `--prompt`, face image, backend |
 | 출력 | `outputs/avatar.mp4` |
 | 핵심 지표 | end-to-end 동작 여부, backend 교체 가능성, 환경 호환성 |
@@ -389,12 +394,46 @@ quant tags(q4, q8, fp16)
 |---|---|---|---|
 | `static` | 정지 이미지 + 오디오를 mp4로 합성 | ffmpeg | 전체 배선 검증, fallback |
 | `wav2lip` | 외부 Wav2Lip repo를 호출 | 외부 repo, checkpoint | 실제 lip-sync |
+| `musetalk` | 외부 MuseTalk repo를 호출 | 외부 repo, checkpoint, GPU | 실시간 lip-sync, 품질/RTF 비교 |
 
 **확인 포인트**
 
 - `static`은 lip-sync 품질 검증용이 아니라 파이프라인 배선 검증용이다.
 - 무거운 lip-sync 모델은 repo에 포함하지 않고 외부 경로로 주입한다.
-- Wav2Lip/SadTalker 계열은 CUDA 가정 코드가 많아 MPS 환경에서는 추가 패치가 필요할 수 있다.
+- Wav2Lip/SadTalker 계열은 CUDA 가정 코드가 많아 MPS 환경에서는 추가 패치가 필요할 수 있다. MuseTalk는 실시간을 위해 GPU를 가정한다.
+- 저지연 대화용 아바타는 lab-ui Live Voice의 브라우저 viseme(오디오 구동) 레이어로도 붙일 수 있다. 음성 파이프라인과 독립이라 cascade·S2S 출력 모두 커버한다.
+
+### 4.9 `s2s-gen/` - 캐스케이드 · 표현형 TTS · full-duplex
+
+| 항목 | 내용 |
+|---|---|
+| 목적 | 캐스케이드(STT→LLM→TTS)·표현형 TTS(CSM)·full-duplex(Moshi)를 같은 축에서 비교 |
+| 핵심 파일 | `s2s.py`, `bench_s2s.py`, `backends/base.py`, `backends/cascade.py`, `backends/csm.py`, `backends/moshi.py` |
+| 입력 | `--backend`(cascade\|csm), `--ask`(Piper로 음성 합성) 또는 `--audio` wav |
+| 출력 | `outputs/answer_<backend>.wav` |
+| 핵심 지표 | TTFA(첫 응답 오디오), E2E, RTF |
+
+```text
+in_wav
+  -> S2S backend (cascade | csm)        # csm = STT→LLM→CSM(TTS만 교체)
+  -> out_wav + metrics(TTFA, E2E, RTF)
+
+moshi (full-duplex)                      # 파일→파일 불가
+  -> moshi_mlx.local_web (:8998) 라이브 대화  # lab-ui "Moshi 라이브" 카드
+```
+
+| Backend | 역할 | 의존성 | 용도 |
+|---|---|---|---|
+| `cascade` | STT→LLM→TTS 기준선 | faster-whisper, OpenAI 호환 LLM, Piper | 어디서나 동작, 관찰가능성 비교 기준 |
+| `csm` | cascade 의 TTS만 Sesame CSM 으로 교체 | 외부 clone(CSM_DIR) + HF 게이트 + `--extra csm`(torch/MPS) | 표현형 TTS — Piper 대비 운율·표현력 |
+| `moshi` | full-duplex 라이브(파일→파일 아님) | `moshi_mlx`(Python 3.12), 가중치 | 실시간 대화 — lab-ui 런처로 :8998 기동 |
+
+**확인 포인트**
+
+- CSM 은 단독 S2S가 아니라 conversational TTS다. `cascade` 를 상속해 `_synthesize` 만 교체하므로, 같은 STT/LLM 위에서 Piper↔CSM 을 직접 비교한다.
+- 현재 `sesame/csm-1b` 는 config.json 이 transformers 형식이라 구버전 csm 의 `from_pretrained` 가 실패한다 → 백엔드가 `ckpt.pt` + 표준 ModelArgs 로 직접 로딩해 우회한다.
+- Moshi 는 full-duplex라 파일→파일이 없다. lab-ui `/api/moshi/start|stop|status`(serve 프로세스 패턴 재사용)로 `moshi_mlx.local_web` 을 띄우고 자체 웹 UI(:8998)에서 대화한다.
+- lab-ui Live Voice 의 pipeline_mode 토글로 cascade(인프로세스)↔s2s(csm 위임)를 같은 화면에서 비교한다.
 
 ## 5. 최적화 판단 요약
 
@@ -415,5 +454,6 @@ quant tags(q4, q8, fp16)
 | TTS | Streaming synthesis, TTFB 측정 | 첫 audio chunk latency, RTF |
 | STT | Streaming partial transcription, GPU float16/int8_float16 | partial latency, RTF, WER |
 | LLM | vLLM endpoint, 큰 모델, 긴 context | TTFT, decode token/s, aggregate token/s |
-| Avatar | Wav2Lip 외 SadTalker/MuseTalk/LatentSync backend 추가 | 성공률, 품질, 처리 시간 |
+| Avatar | MuseTalk 실측, SadTalker/LatentSync backend 추가, 브라우저 viseme 정교화 | 성공률, 품질, 처리 시간, RTF |
+| S2S | Moshi/CSM 외부 가중치 실측, 풀듀플렉스 끼어들기 평가 | TTFA, E2E, RTF, 대화 역동성 |
 | Serving | Triton/BentoML/vLLM 결과와 baseline 비교 | throughput, p95/p99, resource usage |

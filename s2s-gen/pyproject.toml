@@ -1,0 +1,33 @@
+[project]
+name = "s2s-gen"
+version = "0.1.0"
+description = "speech-to-speech(음성 네이티브) 모델 vs STT→LLM→TTS 캐스케이드 지연 비교"
+requires-python = ">=3.10"
+# cascade 기준선 의존성만 기본 포함(어디서나 가볍게 동작).
+dependencies = [
+    "faster-whisper>=1.0",  # cascade STT
+    "openai>=1.30",         # cascade LLM (OpenAI 호환 provider)
+    "piper-tts>=1.3",       # 입력 음성 합성 + cascade TTS
+    "numpy>=1.24",
+    "PyYAML>=6.0",
+]
+
+# CSM(표현형 TTS) 백엔드 전용 — `uv sync --extra csm` 로만 설치(기본 cascade는 가볍게 유지).
+# SesameAILabs/csm 의 requirements.txt 를 그대로 미러링(정확 핀 + silentcipher git). CSM repo 자체는
+# 외부 clone(CSM_DIR)로 두고 코드만 import 한다. moshi 풀듀플렉스는 라이브 전용이라 여기 넣지 않는다
+# (lab-ui 런처가 3.12 별도 환경으로 기동).
+[project.optional-dependencies]
+csm = [
+    "torch==2.4.0",
+    "torchaudio==2.4.0",
+    "tokenizers==0.21.0",
+    "transformers==4.49.0",
+    "huggingface_hub==0.28.1",
+    "moshi==0.2.2",
+    "torchtune==0.4.0",
+    "torchao==0.9.0",
+    "silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master",
+]
+
+[tool.uv]
+package = false

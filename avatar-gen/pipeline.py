@@ -188,7 +188,7 @@ def main():
     ap.add_argument("--prompt", help="LLM에 줄 프롬프트 (응답을 말하게 함)")
     ap.add_argument("--text", help="LLM 건너뛰고 이 텍스트를 바로 말하게 함")
     ap.add_argument("--face", help="얼굴 이미지/영상 경로(없으면 static 검증용 placeholder 생성)")
-    ap.add_argument("--backend", help="static | wav2lip (config 덮어쓰기)")
+    ap.add_argument("--backend", help="static | wav2lip | musetalk (config 덮어쓰기)")
     ap.add_argument("--device", default="auto", help="auto | cuda | mps | cpu")
     ap.add_argument("--json", action="store_true", help="metrics를 JSON으로 출력")
     ap.add_argument("-o", "--output", default="outputs/avatar.mp4")

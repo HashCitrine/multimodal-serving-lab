@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import shutil
 import signal
 import subprocess
@@ -126,8 +127,11 @@ TARGETS: dict[str, dict] = {
         "params": {
             "from_tts": P("--from-tts", "str", default="hello from whisper"),
             "model": P("--model", "choice",
-                       choices=["tiny.en", "base.en", "small.en", "medium.en", "large-v3"],
+                       choices=["tiny", "base", "small", "medium",
+                                "tiny.en", "base.en", "small.en", "medium.en", "large-v3"],
                        default="base.en"),
+            "language": P("--language", "choice",
+                          choices=["auto", "ko", "en", "ja", "zh"], default="auto"),
             "compute_type": P("--compute-type", "choice",
                               choices=["int8", "float32", "float16", "int8_float16"],
                               default="int8"),
@@ -154,6 +158,8 @@ TARGETS: dict[str, dict] = {
         "script": "agent.py",
         "params": {
             "ask": P("--ask", "str", default="How do you spell necessary?"),
+            "language": P("--language", "choice",
+                          choices=["auto", "ko", "en", "ja", "zh"], default="auto"),
         },
         "produces_files": True,
     },
@@ -176,8 +182,9 @@ TARGETS: dict[str, dict] = {
         "kind": "job",
         "script": "s2s.py",
         "params": {
-            "backend": P("--backend", "choice", choices=["cascade", "csm"], default="cascade"),
+            "backend": P("--backend", "choice", choices=["cascade", "csm", "melo"], default="cascade"),
             "ask": P("--ask", "str", default="How do you spell necessary?"),
+            "language": P("--language", "choice", choices=["auto", "ko", "en", "ja", "zh"], default="auto"),
             "device": P("--device", "choice", choices=["auto", "cuda", "mps", "cpu"], default="auto"),
         },
         "produces_files": True,
@@ -307,10 +314,10 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
         },
         "voice": {
             "help": "사용할 Piper 보이스 이름입니다.",
-            "impact": "목소리와 언어가 바뀌며, 해당 .onnx 보이스 모델이 models에 있어야 합니다.",
+            "impact": "목소리와 언어가 바뀌며, 해당 .onnx 보이스 모델이 models에 있어야 합니다. 한국어는 ko_KR-kss-medium(커뮤니티 보이스)을 download로 먼저 받으세요.",
             "empty": "기본 Piper 보이스를 사용합니다.",
             "fallback": "en_US-lessac-medium",
-            "placeholder": "예: en_US-lessac-medium",
+            "placeholder": "예: en_US-lessac-medium 또는 ko_KR-kss-medium",
         },
         "length_scale": {
             "help": "발화 속도 계수입니다.",
@@ -333,8 +340,12 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
             "impact": "왕복 검증에서는 이 텍스트와 전사 결과를 비교해 WER를 계산합니다.",
         },
         "model": {
-            "help": "faster-whisper 모델 크기입니다.",
-            "impact": "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다.",
+            "help": "faster-whisper 모델 크기입니다. .en 접미사는 영어 전용입니다.",
+            "impact": "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다. 한국어 등 비영어는 .en이 아닌 다국어 모델(tiny/base/small/medium 또는 large-v3)이 필요합니다.",
+        },
+        "language": {
+            "help": "전사 언어입니다.",
+            "impact": "auto는 자동 감지, ko/ja/zh 등은 해당 언어로 강제합니다. .en 모델로는 한국어 등이 인식되지 않으니 다국어 모델과 함께 쓰세요.",
         },
         "compute_type": {
             "help": "모델 계산 정밀도/양자화 방식입니다.",
@@ -365,7 +376,11 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
     "voice-agent": {
         "ask": {
             "help": "음성 에이전트에게 물어볼 질문 텍스트입니다.",
-            "impact": "이 텍스트를 입력 음성으로 합성한 뒤 STT, LLM, TTS 전체 지연을 측정합니다.",
+            "impact": "이 텍스트를 입력 음성으로 합성한 뒤 STT, LLM, TTS 전체 지연을 측정합니다. 한국어로 물으려면 language를 ko로 두고 한국어 보이스가 준비돼 있어야 합니다.",
+        },
+        "language": {
+            "help": "대화 언어입니다 — STT 인식 언어·LLM 응답 언어·기본 보이스를 함께 결정합니다.",
+            "impact": "auto는 자동 감지 후 같은 언어로 응답합니다. ko 등은 config의 languages 기본값(다국어 STT 모델·보이스·프롬프트)을 사용합니다.",
         },
     },
     "avatar-gen": {
@@ -391,15 +406,19 @@ PARAM_HELP: dict[str, dict[str, dict[str, str]]] = {
     "s2s-gen": {
         "backend": {
             "help": "음성 응답 파이프라인 방식입니다.",
-            "impact": "cascade는 STT→LLM→TTS 기준선(어디서나 동작), moshi/csm은 외부 음성 네이티브 모델로 단계 없는 S2S를 시도합니다.",
+            "impact": "cascade는 STT→LLM→TTS 기준선, csm은 표현형 TTS, melo는 한국어 등 다국어 TTS로 응답합니다.",
         },
         "ask": {
             "help": "에이전트에게 물어볼 질문 텍스트입니다.",
             "impact": "이 텍스트를 입력 음성으로 합성한 뒤 backend의 TTFA/E2E/RTF를 측정합니다.",
         },
+        "language": {
+            "help": "대화 언어입니다.",
+            "impact": "ko/en/ja/zh를 고르면 STT 모델·전사 언어·LLM 응답 언어·기본 질문 보이스·MeloTTS 언어가 함께 바뀝니다.",
+        },
         "device": {
             "help": "음성 네이티브 백엔드 실행 장치입니다.",
-            "impact": "auto는 cuda, mps, cpu 순으로 고릅니다. moshi/csm은 cuda 권장입니다.",
+            "impact": "auto는 cuda, mps, cpu 순으로 고릅니다. csm/melo의 로컬 실행 장치를 덮어씁니다.",
         },
     },
 }
@@ -449,7 +468,15 @@ def outputs_dir(target: str) -> Path:
     return target_dir(target) / "outputs"
 
 
-def target_cmd(target: str, extra: Optional[str] = None) -> list[str]:
+MELO_WITH = [
+    "melotts @ git+https://github.com/myshell-ai/MeloTTS.git",
+    "soundfile>=0.12",
+    "unidic-lite>=1.0.8",
+    "python-mecab-ko>=1.3.7",
+]
+
+
+def target_cmd(target: str, extra: Optional[str] = None, with_packages: Optional[list[str]] = None) -> list[str]:
     """target을 실행하는 명령 prefix.
 
     각 서브 프로젝트는 uv 프로젝트(pyproject.toml + .python-version)다.
@@ -460,7 +487,10 @@ def target_cmd(target: str, extra: Optional[str] = None) -> list[str]:
     optional extra 가 필요한 백엔드(예: s2s-gen csm = torch)는 반드시 같은 `--extra` 로 실행해야
     한다. extra 없이 실행하면 그 extra 패키지가 매번 제거된다(=torch 미설치 오류의 원인).
     """
-    return ["uv", "run", *(["--extra", extra] if extra else []), "python"]
+    with_args: list[str] = []
+    for pkg in with_packages or []:
+        with_args.extend(["--with", pkg])
+    return ["uv", "run", *(["--extra", extra] if extra else []), *with_args, "python"]
 
 
 # ---------------------------------------------------------------------------
@@ -557,10 +587,12 @@ def _run_job(job: dict):
         job["status"] = "running"
         job["started_at"] = time.time()
         try:
+            env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
             proc = subprocess.Popen(
                 job["cmd"], cwd=cwd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
+                env=env,
             )
         except Exception as e:  # 실행 자체 실패(파일 없음 등)
             job["log"].append(f"[lab-ui] 실행 실패: {e}")
@@ -845,10 +877,15 @@ def _ollama_up(base: str = "http://localhost:11434") -> bool:
 
 
 def _voice_present(voice_models_dir: Path, voice: str) -> bool:
-    # piper voice는 <name>.onnx 형태로 캐시된다.
-    if not voice_models_dir.exists():
+    # PiperVoice.load("<name>.onnx")는 같은 경로의 <name>.onnx.json도 필요하다.
+    cfg = voice_models_dir / f"{voice}.onnx.json"
+    if not (voice_models_dir / f"{voice}.onnx").exists() or not cfg.exists():
         return False
-    return any(voice_models_dir.glob(f"{voice}*.onnx"))
+    try:
+        phoneme_type = (json.loads(cfg.read_text(encoding="utf-8")).get("phoneme_type") or "espeak").lower()
+    except Exception:
+        return False
+    return phoneme_type in ("espeak", "text")
 
 
 def preflight(target: str) -> dict:
@@ -879,6 +916,16 @@ def preflight(target: str) -> dict:
             "name": "piper voice",
             "ok": v_ok,
             "hint": "" if v_ok else "TTS 카드에서 '보이스 다운로드'(--download)를 먼저 실행하세요.",
+        })
+
+    if target in ("voice-agent", "s2s-gen"):
+        vdir = ROOT / "tts-gen" / "models"
+        ko_ok = _voice_present(vdir, "ko_KR-kss-medium")
+        checks.append({
+            "name": "korean piper voice",
+            "ok": ko_ok,
+            "hint": "" if ko_ok else "한국어 --ask/cascade 입력 합성용 보이스가 없습니다: "
+                                    "cd tts-gen && uv run python synthesize.py --download --voice ko_KR-kss-medium",
         })
 
     if target in ("llm-serve", "voice-agent", "avatar-gen", "s2s-gen"):
@@ -1104,11 +1151,14 @@ SERVICES: dict[str, dict] = {
     "whisper-stt": {"dir": "stt-gen", "target": "bento_service:WhisperSTT", "port": 3001, "extra": None},
     "piper-tts":   {"dir": "tts-gen", "target": "bento_service:PiperTTS",   "port": 3002, "extra": None},
     "csm-tts":     {"dir": "s2s-gen", "target": "bento_service:CSMTTS",     "port": 3003, "extra": "csm"},
+    "melo-tts":    {"dir": "s2s-gen", "target": "bento_service:MeloTTS",    "port": 3004, "extra": None,
+                    "with": ["bentoml>=1.4", *MELO_WITH]},
 }
 SVC: dict[str, dict] = {
     name: {"proc": None, "started_at": None, "log": deque(maxlen=LOG_TAIL)} for name in SERVICES
 }
 SVC_LOCK = threading.Lock()
+_ERROR_RE = re.compile(r"(traceback|error|exception|runtimeerror|failed|no such file)", re.I)
 
 
 def _svc_url(name: str) -> str:
@@ -1141,8 +1191,11 @@ def svc_start(name: str) -> dict:
             return {"status": "already_running", "url": _svc_url(name)}
         SVC[name]["log"].clear()
         extra = spec["extra"]
-        # `uv run [--extra X] bentoml serve <Class> --port <p>` — 해당 모달리티 venv 에서 모델 1회 로드.
-        cmd = ["uv", "run", *(["--extra", extra] if extra else []),
+        with_args: list[str] = []
+        for pkg in spec.get("with", []):
+            with_args.extend(["--with", pkg])
+        # `uv run [--extra X] [--with pkg] bentoml serve ...` — 모델 1회 로드.
+        cmd = ["uv", "run", *(["--extra", extra] if extra else []), *with_args,
                "bentoml", "serve", spec["target"], "--port", str(spec["port"])]
         # lab-ui 가 (루트 .venv 에서) 실행 중이면 VIRTUAL_ENV 가 상속돼 bentoml 워커가 그 venv 로 뜬다.
         # → s2s-gen 의 csm extra(torch 2.4 등)가 아닌 루트 venv 가 잡혀 로드 실패. VIRTUAL_ENV 를 제거해
@@ -1175,6 +1228,8 @@ def svc_stop(name: str) -> dict:
 
 
 def svc_status(name: str) -> dict:
+    log = list(SVC[name]["log"])
+    last_error = next((line for line in reversed(log) if _ERROR_RE.search(line)), "")
     return {
         "name": name,
         "running": _svc_running(name),   # uv/서버 프로세스 살아있나
@@ -1182,8 +1237,10 @@ def svc_status(name: str) -> dict:
         "url": _svc_url(name),
         "port": SERVICES[name]["port"],
         "extra": SERVICES[name]["extra"],
+        "with": SERVICES[name].get("with", []),
         "started_at": SVC[name]["started_at"],
-        "log": list(SVC[name]["log"]),
+        "last_error": last_error,
+        "log": log,
     }
 
 
@@ -1266,10 +1323,17 @@ async def create_job(target: str, body: JobRequest):
     # (config의 server.port 변경 시 bench.py 기본값 8000과 어긋나는 것을 방지)
     if target == "serve":
         cli_args = ["--url", SERVE_URL, *cli_args]
-    # s2s-gen csm 백엔드는 torch 등 csm extra 가 필요 → `uv run --extra csm` 로 실행해야
+    # s2s-gen csm/melo 백엔드는 별도 extra 가 필요 → `uv run --extra ...` 로 실행해야
     # uv 가 매 실행 시 그 패키지를 제거하지 않는다(cascade 는 가볍게 plain uv run).
-    extra = "csm" if (target == "s2s-gen" and (body.params or {}).get("backend") == "csm") else None
-    cmd = [*target_cmd(target, extra=extra), TARGETS[target]["script"], *cli_args]
+    extra = None
+    with_packages = None
+    if target == "s2s-gen" and (body.params or {}).get("backend") in {"csm", "melo"}:
+        backend = (body.params or {}).get("backend")
+        if backend == "csm":
+            extra = "csm"
+        elif backend == "melo":
+            with_packages = MELO_WITH
+    cmd = [*target_cmd(target, extra=extra, with_packages=with_packages), TARGETS[target]["script"], *cli_args]
     job = _new_job(target, cmd)
     threading.Thread(target=_run_job, args=(job,), daemon=True).start()
     return {"job_id": job["id"], "cmd": cmd}

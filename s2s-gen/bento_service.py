@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sesame CSM(표현형 TTS) 를 BentoML 서비스로 패키징.
+"""CSM(표현형 TTS)·MeloTTS(다국어 TTS)를 BentoML 서비스로 패키징.
 
 0→1 서빙: STT(whisper-stt)·TTS(piper-tts)와 동일하게 모델을 프레임워크(BentoML)로 감싸
 REST API·헬스체크·동시성/타임아웃 관리를 한 번에 얻는다. 핵심 동기는 **저지연**이다 —
@@ -22,12 +22,15 @@ from __future__ import annotations
 import os
 import tempfile
 import time
+import traceback
+import wave
 from pathlib import Path
 from typing import Annotated
 
 import bentoml
 
 import csm_runtime
+from melo_runtime import prepare_unidic_lite
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -120,4 +123,115 @@ class CSMTTS:
             "chars": len(text),
             "device": self.device,
             "speaker": spk,
+        }
+
+
+_MELO_WORKERS = int(os.environ.get("MELO_BENTO_WORKERS", os.environ.get("BENTO_WORKERS", "1")))
+
+
+def _melo_speaker_id(model, language: str, speaker: str):
+    speakers = model.hps.data.spk2id
+    keys = list(speakers.keys())
+
+    def pick(key: str):
+        return speakers[key] if key in keys else None
+
+    if speaker:
+        if str(speaker).isdigit():
+            return int(speaker)
+        return pick(speaker) if pick(speaker) is not None else speakers[keys[0]]
+    if language == "EN":
+        return pick("EN-Default") if pick("EN-Default") is not None else speakers[keys[0]]
+    return pick(language) if pick(language) is not None else speakers[keys[0]]
+
+
+@bentoml.service(
+    name="melo-tts",
+    workers=_MELO_WORKERS,
+    traffic={"timeout": 600, "concurrency": 8},
+)
+class MeloTTS:
+    """MeloTTS 다국어 음성 합성 서비스(언어별 모델 1회 로드·캐시)."""
+
+    def __init__(self) -> None:
+        self.device = os.environ.get("MELO_DEVICE", os.environ.get("S2S_DEVICE", "auto"))
+        self.default_language = os.environ.get("MELO_LANGUAGE", "EN")
+        self.default_speaker = os.environ.get("MELO_SPEAKER", "")
+        self.default_speed = float(os.environ.get("MELO_SPEED", "1.0"))
+        self._models = {}
+        self._get_model(self.default_language)
+        print(f"[melo-tts] ready device={self.device} default_language={self.default_language}")
+
+    def _error(self, action: str, exc: Exception) -> RuntimeError:
+        detail = f"melo-tts {action} failed: {type(exc).__name__}: {exc}"
+        print(f"[melo-tts:error] {detail}")
+        traceback.print_exc()
+        return RuntimeError(detail)
+
+    def _get_model(self, language: str):
+        lang = (language or self.default_language or "EN").upper()
+        if lang not in self._models:
+            prepare_unidic_lite()
+            from melo.api import TTS
+
+            t0 = time.perf_counter()
+            self._models[lang] = TTS(language=lang, device=self.device)
+            print(f"[melo-tts] loaded language={lang} ({time.perf_counter()-t0:.1f}s)")
+        return self._models[lang]
+
+    def _synthesize_file(self, text: str, language: str, speaker: str, speed: float, tmp: Path) -> str:
+        lang = (language or self.default_language or "EN").upper()
+        model = self._get_model(lang)
+        spk = _melo_speaker_id(model, lang, speaker or self.default_speaker)
+        spd = self.default_speed if speed <= 0 else float(speed)
+        model.tts_to_file(text or "ok", spk, str(tmp), speed=spd, quiet=True)
+        return lang
+
+    @bentoml.api
+    def diagnostics(self) -> dict:
+        return {
+            "ok": True,
+            "device": self.device,
+            "default_language": self.default_language,
+            "loaded_languages": sorted(self._models),
+            "mecabrc": os.environ.get("MECABRC", ""),
+        }
+
+    @bentoml.api
+    def synthesize(
+        self, text: str, language: str = "", speaker: str = "", speed: float = 0.0
+    ) -> Annotated[Path, bentoml.validators.ContentType("audio/wav")]:
+        """텍스트 → WAV 파일. language: EN|KR|JP|ZH|ES|FR."""
+        lang = (language or self.default_language or "EN").upper()
+        tmp = Path(tempfile.gettempdir()) / f"melo_{lang.lower()}_{int(time.time()*1000)}.wav"
+        try:
+            self._synthesize_file(text, lang, speaker, speed, tmp)
+        except Exception as exc:
+            raise self._error(f"synthesize language={lang}", exc) from exc
+        return tmp
+
+    @bentoml.api
+    def synthesize_meta(self, text: str, language: str = "", speaker: str = "", speed: float = 0.0) -> dict:
+        lang = (language or self.default_language or "EN").upper()
+        tmp = Path(tempfile.gettempdir()) / f"melo_meta_{lang.lower()}_{int(time.time()*1000)}.wav"
+        t0 = time.perf_counter()
+        try:
+            lang = self._synthesize_file(text, lang, speaker, speed, tmp)
+            synth_s = time.perf_counter() - t0
+            with wave.open(str(tmp), "rb") as w:
+                audio_s = w.getnframes() / float(w.getframerate())
+        except Exception as exc:
+            raise self._error(f"synthesize_meta language={lang}", exc) from exc
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return {
+            "audio_seconds": round(audio_s, 3),
+            "synth_seconds": round(synth_s, 4),
+            "rtf": round(synth_s / audio_s, 4) if audio_s else None,
+            "realtime_x": round(audio_s / synth_s, 2) if synth_s else None,
+            "chars": len(text),
+            "device": self.device,
+            "language": lang,
         }

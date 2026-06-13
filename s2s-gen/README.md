@@ -11,6 +11,8 @@
 - **`csm`** — Sesame CSM(`sesame/csm-1b`)은 단독 S2S가 아니라 **conversational TTS**다. 그래서
   cascade 의 STT+LLM 은 그대로 쓰고 **TTS 단계만 CSM 으로 교체**한다(Piper 대비 운율·표현력 비교).
   Apple Silicon **MPS** 에서 로컬 실행된다.
+- **`melo`** — MeloTTS 는 한국어·일본어·중국어·영어 등을 지원하는 다국어 TTS다. CSM 과 같은
+  cascade 상속 구조로 STT+LLM 은 유지하고 TTS 단계만 MeloTTS 로 교체한다.
 - **`moshi`** — Kyutai Moshi(full-duplex)는 파일→파일 오프라인 API가 없다. 로컬 실행은 **라이브 웹
   데모뿐**이라 이 모듈의 backend 로는 돌리지 않고, lab-ui "Moshi 라이브" 카드 또는 아래 명령으로 띄운다.
 
@@ -23,6 +25,16 @@ uv run python s2s.py --backend cascade --ask "How do you spell necessary?"
 ```
 
 cascade 는 로컬 Ollama(`ollama serve`)와 tts-gen Piper 보이스를 사용한다(앞선 서빙 실험 자산 재사용).
+
+한국어 입력 음성 합성에는 tts-gen 의 한국어 Piper 보이스가 필요하다.
+
+```bash
+cd ../tts-gen
+uv run python synthesize.py --download --voice ko_KR-kss-medium
+```
+
+`ko_KR-kss-medium` 은 `neurlang/piper-onnx-kss-korean` 커뮤니티 보이스를 내려받는다
+(라이선스: cc-by-nc-sa-4.0).
 
 ## CSM(표현형 TTS) 준비 — 로컬 MPS 실행
 
@@ -69,7 +81,7 @@ curl -s -X POST http://127.0.0.1:3003/synthesize \
   서비스가 없으면 인프로세스로 1회 로드해 단독 동작한다.
 - **lab-ui "모델 서비스" 카드**로 whisper-stt/piper-tts/csm-tts 를 한 화면에서 기동/정지/상태확인.
 - **Live Voice** 의 `serving_mode`(in_process|served) 토글로 "인프로세스 vs 서빙" 지연을 실측 비교.
-  s2s(csm) 모드의 TTS 는 항상 csm-tts 서비스를 쓴다.
+  s2s(csm/melo) 모드의 TTS 는 항상 csm-tts 또는 melo-tts 서비스를 쓴다.
 
 ### 서비스 벤치(상주 — 로드 비용 제외)
 
@@ -79,6 +91,41 @@ uv run --extra csm python bench_csm.py    # csm-tts /synthesize_meta 스윕 → 
 
 > 컨테이너화(`bentoml build` → `containerize`)는 `bentofile.yaml`/`requirements-csm.txt` 로 가능하나,
 > CSM repo(generator.py 등)·게이트 가중치는 외부라 실행 시 `CSM_DIR` 마운트 + HF 토큰 주입이 필요하다.
+
+## MeloTTS 다국어 TTS — 한국어 경로
+
+MeloTTS 는 PyPI sdist가 깨져 있어 프로젝트 extra 로 묶지 않고, 실행할 때만 GitHub 소스를 `uv --with`
+로 주입한다. 이렇게 해야 CSM 의존성 해석이 MeloTTS 패키지 빌드에 끌려 들어가지 않는다.
+
+```bash
+# 별도 unidic 다운로드 대신 unidic-lite 내장 사전을 사용한다.
+# 한국어(KR)는 g2pkk가 python-mecab-ko 사전도 필요로 한다.
+uv run --with "melotts @ git+https://github.com/myshell-ai/MeloTTS.git" \
+       --with unidic-lite \
+       --with python-mecab-ko \
+       python -c "import unidic_lite; print(unidic_lite.DICDIR)"
+
+# 상주 서비스 기동(언어별 모델 1회 로드·캐시)
+uv run --with "melotts @ git+https://github.com/myshell-ai/MeloTTS.git" \
+       --with unidic-lite \
+       --with python-mecab-ko \
+       --with bentoml \
+       bentoml serve bento_service:MeloTTS --port 3004
+
+# 한국어 합성 요청
+curl -s -X POST http://127.0.0.1:3004/synthesize \
+     -H 'Content-Type: application/json' \
+     -d '{"text":"안녕하세요. 한국어 음성 합성 테스트입니다.","language":"KR"}' -o melo_ko.wav
+
+# STT→LLM→MeloTTS 단일 턴
+uv run --with "melotts @ git+https://github.com/myshell-ai/MeloTTS.git" \
+       --with unidic-lite \
+       --with python-mecab-ko \
+       python s2s.py --backend melo --language ko --ask "파이썬 리스트와 튜플의 차이는 뭐야?"
+```
+
+`config.yaml` 의 `language`/`languages` 맵이 STT 모델, Whisper 언어, LLM 시스템 프롬프트,
+Piper 질문 보이스, MeloTTS 언어(`KR|EN|JP|ZH|ES|FR`)를 함께 결정한다.
 
 ## Moshi(full-duplex) 준비 — 라이브 웹 데모
 
@@ -93,11 +140,15 @@ uv run --python 3.12 --with moshi_mlx python -m moshi_mlx.local_web -q 4
 
 ## 벤치
 
-`bench_s2s.py`는 같은 질문 세트로 backend(cascade|csm)의 TTFA·E2E·RTF 중앙값을 측정한다.
+`bench_s2s.py`는 같은 질문 세트로 backend(cascade|csm|melo)의 TTFA·E2E·RTF 중앙값을 측정한다.
 
 ```bash
 uv run python bench_s2s.py --backend cascade
 CSM_DIR=../_external/csm uv run python bench_s2s.py --backend csm
+uv run --with "melotts @ git+https://github.com/myshell-ai/MeloTTS.git" \
+       --with unidic-lite \
+       --with python-mecab-ko \
+       python bench_s2s.py --backend melo --language ko
 ```
 
 결과 wav 는 `outputs/`에 생성되며 Git 에 포함하지 않는다.
@@ -106,10 +157,10 @@ CSM_DIR=../_external/csm uv run python bench_s2s.py --backend csm
 
 ```text
 s2s-gen/
-├── s2s.py             # 단일 턴 CLI(cascade|csm): in_wav→out_wav, 지연 예산 출력
+├── s2s.py             # 단일 턴 CLI(cascade|csm|melo): in_wav→out_wav, 지연 예산 출력
 ├── bench_s2s.py       # TTFA·E2E·RTF 중앙값 벤치
 ├── bench_csm.py       # csm-tts 상주 서비스 RTF 벤치(/synthesize_meta)
-├── bento_service.py   # csm-tts BentoML 서비스(CSM 1회 로드·상주)
+├── bento_service.py   # csm-tts / melo-tts BentoML 서비스(모델 1회 로드·상주)
 ├── bentofile.yaml     # csm-tts 컨테이너 빌드 정의
 ├── requirements-csm.txt # 컨테이너 빌드용 의존성(csm extra 미러)
 ├── csm_runtime.py     # CSM 로드/합성 공통 모듈(service ↔ backend 공유)
@@ -118,5 +169,6 @@ s2s-gen/
     ├── base.py        # S2SBackend(abstract): generate(in_wav,out_wav)->metrics
     ├── cascade.py     # STT→LLM→TTS 기준선(_synthesize 교체점)
     ├── csm.py         # cascade 상속 + TTS만 CSM(service-aware: csm-tts 서비스 or 인프로세스)
+    ├── melo.py        # cascade 상속 + TTS만 MeloTTS(service-aware: melo-tts 서비스 or 인프로세스)
     └── moshi.py       # full-duplex 라이브 전용 안내 스텁(lab-ui 런처 사용)
 ```

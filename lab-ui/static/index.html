@@ -78,6 +78,7 @@
   .metric .k { color:var(--mut); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .metric .v { font-size:14px; font-weight:600; overflow-wrap:anywhere; }
   .metric .d { color:var(--mut); font-size:11px; line-height:1.35; margin-top:3px; overflow-wrap:anywhere; }
+  .resolved { color:var(--mut); font-size:12px; padding:4px 2px; overflow-wrap:anywhere; }
   .metric-note { color:var(--mut); font-size:11px; line-height:1.4; margin:0; }
   table.metric-table { width:100%; border-collapse:collapse; font-size:12px; }
   .metric-table th, .metric-table td { border-top:1px solid var(--line); padding:5px 6px; text-align:right; }
@@ -299,6 +300,17 @@ function renderMetrics(box, metrics, rows){
     });
     table.append(tbody); box.append(table);
   }
+}
+
+function renderResolved(box, resolved){
+  box.querySelectorAll('.resolved').forEach(e=>e.remove());
+  if (!resolved || !Object.keys(resolved).length) return;
+  const keys = ['language','whisper_lang','stt_model','stt_model_actual','detected_language','language_probability','voice','melo_lang','system_source','pipeline_mode','serving_mode','s2s_backend','tts_backend'];
+  const line = keys
+    .filter(k => resolved[k] != null && String(resolved[k]) !== '')
+    .map(k => `${k}=${resolved[k]}`)
+    .join(' · ');
+  if (line) box.append($('div','resolved','적용값: ' + line));
 }
 
 function metricHeader(k){
@@ -777,7 +789,9 @@ async function buildLiveVoiceCard(){
     const d = res.data;
     if (!d.transcript){
       statusEl.textContent = d.note || '전사 결과가 비었습니다.'; statusEl.className = 'status failed';
-      if (d.metrics) renderMetrics(metricBox, d.metrics, []); return;
+      if (d.metrics) renderMetrics(metricBox, d.metrics, []);
+      renderResolved(metricBox, d.resolved);
+      return;
     }
     addTurn('user', '나' + (d.input_audio_s!=null?` · ${d.input_audio_s}s`:''), d.transcript);
     addTurn('assistant', 'assistant' + (d.output_audio_s!=null?` · ${d.output_audio_s}s`:''), d.answer || '');
@@ -786,6 +800,7 @@ async function buildLiveVoiceCard(){
       respAudio.play().catch(()=>{ statusEl.textContent='응답 생성됨 (자동재생 차단 — 재생 버튼을 누르세요)'; });
     }
     renderMetrics(metricBox, d.metrics, []);
+    renderResolved(metricBox, d.resolved);
     sess.turns += 1;
     if (d.metrics && d.metrics.e2e_ms) sess.e2eSum += Number(d.metrics.e2e_ms.value) || 0;
     if (d.metrics && d.metrics.bottleneck) sess.lastBottleneck = d.metrics.bottleneck.value;
@@ -848,20 +863,21 @@ function buildMoshiCard(){
   return card;
 }
 
-// 모델 서비스(BentoML) — 모델을 1회 로드해 상주시키는 서비스(whisper-stt/piper-tts/csm-tts)를
-// 기동/정지/상태. Live Voice의 serving_mode=served(STT/Piper) 또는 s2s=csm(csm-tts)이 이들을 호출한다.
+// 모델 서비스(BentoML) — 모델을 1회 로드해 상주시키는 서비스(whisper-stt/piper-tts/csm-tts/melo-tts)를
+// 기동/정지/상태. Live Voice의 serving_mode=served(STT/Piper) 또는 s2s(csm/melo)가 이들을 호출한다.
 function buildServicesCard(){
   const card = $('div','card');
   const title = $('h2', null, ''); title.append($('span', null, '모델 서비스 (BentoML)')); card.append(title);
   card.append($('p','note','모델을 1회 로드해 상주시키는 BentoML 서비스입니다. Live Voice에서 '
-    + 'serving_mode=served(STT/TTS) 또는 s2s=csm(csm-tts)을 쓰려면 먼저 여기서 기동하세요.'));
-  card.append($('p','hints','csm-tts는 외부 CSM 가중치가 필요하고 첫 기동 시 로딩에 수십 초 걸립니다. '
+    + 'serving_mode=served(STT/TTS) 또는 s2s=csm/melo를 쓰려면 먼저 여기서 기동하세요.'));
+  card.append($('p','hints','csm-tts와 melo-tts는 첫 기동 시 모델 다운로드/로딩에 시간이 걸릴 수 있습니다. '
     + '경량 모델(whisper-stt/piper-tts)은 인프로세스 대비 HTTP 오버헤드가 있어 "인프로세스 vs 서빙" 비교 실측용입니다.'));
 
   const services = [
     {name:'whisper-stt', label:'STT · whisper (:3001)'},
     {name:'piper-tts',   label:'TTS · piper (:3002)'},
     {name:'csm-tts',     label:'TTS · CSM 표현형 (:3003)'},
+    {name:'melo-tts',    label:'TTS · Melo 다국어 (:3004)'},
   ];
   const rows = {};
   let poll = null;
@@ -890,9 +906,15 @@ function buildServicesCard(){
     (r.services||[]).forEach(st=>{
       const el = rows[st.name]; if (!el) return;
       el.startBtn.disabled = st.running; el.stopBtn.disabled = !st.running;
-      if (st.running && !st.up){ el.status.textContent='기동 중… (모델 로딩)'; el.status.className='status running'; }
+      if (st.running && !st.up){
+        el.status.textContent = st.last_error ? `기동 실패 가능: ${st.last_error}` : '기동 중… (모델 로딩)';
+        el.status.className = st.last_error ? 'status failed' : 'status running';
+      }
       else if (st.up){ el.status.textContent='실행 중'; el.status.className='status succeeded'; }
-      else { el.status.textContent='정지됨'; el.status.className='status'; }
+      else {
+        el.status.textContent = st.last_error ? `정지됨 · 최근 오류: ${st.last_error}` : '정지됨';
+        el.status.className = st.last_error ? 'status failed' : 'status';
+      }
     });
     const logs = (r.services||[]).filter(s=>s.log && s.log.length)
       .map(s=>`# ${s.name}\n`+s.log.slice(-12).join('\n')).join('\n\n');

@@ -20,6 +20,7 @@ STT→LLM→TTS를 직접 실행한다. LLM은 Ollama 네이티브 /api/chat로 
 from __future__ import annotations
 
 import shutil
+import json
 import tempfile
 import threading
 import time
@@ -41,9 +42,14 @@ VOICE_CFG_PATH = ROOT / "voice-agent" / "config.yaml"
 LIVE_OUT = ROOT / "voice-agent" / "outputs"  # /api/artifacts/voice-agent/<file> 로 서빙
 
 # STT 선택지 — stt-gen 카드 allowlist와 동일하게 유지.
-STT_MODELS = ["tiny.en", "base.en", "small.en", "medium.en", "large-v3"]
+# .en 접미사는 영어 전용. 한국어 등 비영어는 다국어 변형(tiny/base/small/medium) 또는 large-v3 필요.
+STT_MODELS = ["tiny", "base", "small", "medium",
+              "tiny.en", "base.en", "small.en", "medium.en", "large-v3"]
 COMPUTE_TYPES = ["int8", "float32", "float16", "int8_float16"]
 DEVICES = ["auto", "cpu", "cuda"]
+
+# 언어 선택지 — Live Voice 언어 드롭다운. auto=STT 자동감지 + 사용자 언어로 응답.
+LANGUAGES = ["auto", "ko", "en", "ja", "zh"]
 
 # 지표 표시 정의(키 → 라벨/단위/설명/방향). app.py의 voice-agent 지표와 동일한 형태로 반환.
 _METRICS: dict[str, tuple[str, str, str, str]] = {
@@ -59,7 +65,9 @@ _METRICS: dict[str, tuple[str, str, str, str]] = {
 }
 
 # S2S 모드 백엔드 — 파일→파일(턴제)로 동작하는 것만. moshi(full-duplex)는 라이브 전용이라 제외.
-S2S_BACKENDS = ["csm"]
+#   csm  = Sesame CSM(영어 전용 표현형 TTS)
+#   melo = MeloTTS(다국어 — 한국어 포함). 둘 다 상주 BentoML 서비스로 동작.
+S2S_BACKENDS = ["csm", "melo"]
 PIPELINE_MODES = ["cascade", "s2s"]
 
 # --- 프로세스 내 상태(모델 캐시 + 대화 메모리) ---
@@ -91,8 +99,15 @@ def _ollama_up(base: str = "http://localhost:11434") -> bool:
 
 
 def _voice_present(voice_dir: Path, voice: str) -> bool:
-    # piper voice는 <name>.onnx 형태로 캐시된다.
-    return voice_dir.exists() and any(voice_dir.glob(f"{voice}*.onnx"))
+    # PiperVoice.load("<name>.onnx")는 같은 경로의 <name>.onnx.json도 필요하다.
+    cfg = voice_dir / f"{voice}.onnx.json"
+    if not (voice_dir / f"{voice}.onnx").exists() or not cfg.exists():
+        return False
+    try:
+        phoneme_type = (json.loads(cfg.read_text(encoding="utf-8")).get("phoneme_type") or "espeak").lower()
+    except Exception:
+        return False
+    return phoneme_type in ("espeak", "text")
 
 
 def _ollama_models(base: str = "http://localhost:11434") -> list[str]:
@@ -111,6 +126,31 @@ def _live_cfg() -> dict:
 def _live_voice_dir(tts_cfg: dict) -> Path:
     # config의 voice_dir은 voice-agent 디렉터리 기준 상대경로("../tts-gen/models").
     return (VOICE_CFG_PATH.parent / tts_cfg.get("voice_dir", "../tts-gen/models")).resolve()
+
+
+def resolve_lang(cfg: dict, lang: Optional[str]) -> dict:
+    """언어 코드 → 파이프라인 기본값 해석.
+
+    config의 languages 맵(언어별 stt_model/whisper_lang/voice/melo_lang/system)을 읽어
+    STT 언어·기본 보이스·MeloTTS 언어·시스템 프롬프트를 한 번에 결정한다.
+    lang 이 빈값/auto 면 자동 감지(whisper_lang=None) + "사용자 언어로 응답" 지시를 쓴다.
+    """
+    code = (lang or cfg.get("language") or "auto").strip()
+    table = cfg.get("languages", {}) or {}
+    entry = table.get(code, {}) if code != "auto" else {}
+    return {
+        "code": code,
+        "whisper_lang": None if code == "auto" else (entry.get("whisper_lang") or code),
+        "stt_model": entry.get("stt_model") or "",
+        "voice": entry.get("voice") or "",
+        "melo_lang": entry.get("melo_lang") or "EN",
+        "system": entry.get("system") or "",
+    }
+
+
+def _multilingual_model(model: str) -> str:
+    """비영어 전사를 위해 .en(영어 전용) 모델을 다국어 변형으로 자동 승격."""
+    return model[:-3] if model.endswith(".en") else model
 
 
 # --- 모델 로드/캐시 ---
@@ -206,6 +246,7 @@ def _llm_chat_stream(llm_cfg: dict, messages: list[dict]):
 SVC_STT_URL = "http://127.0.0.1:3001"   # whisper-stt
 SVC_TTS_URL = "http://127.0.0.1:3002"   # piper-tts
 SVC_CSM_URL = "http://127.0.0.1:3003"   # csm-tts (표현형 TTS)
+SVC_MELO_URL = "http://127.0.0.1:3004"  # melo-tts (다국어 TTS)
 SERVING_MODES = ["in_process", "served"]
 
 
@@ -217,31 +258,58 @@ def _svc_up(url: str) -> bool:
         return False
 
 
-def _stt_inproc(in_path: Path, model: str, compute: str, device: str) -> str:
+def _stt_inproc(in_path: Path, model: str, compute: str, device: str, language: Optional[str] = None) -> dict:
     stt = _get_stt(model, compute, device)
-    segs, _ = stt.transcribe(str(in_path), beam_size=1)
-    return "".join(s.text for s in segs).strip()
+    segs, info = stt.transcribe(
+        str(in_path),
+        beam_size=1,
+        language=language,
+        task="transcribe",
+        condition_on_previous_text=False,
+    )
+    return {
+        "text": "".join(s.text for s in segs).strip(),
+        "detected_language": getattr(info, "language", None) or language or "auto",
+        "language_probability": round(float(getattr(info, "language_probability", 0.0) or 0.0), 4),
+        "stt_model_actual": model,
+    }
 
 
-def _stt_via_svc(in_path: Path) -> str:
-    """whisper-stt 서비스로 전사(멀티파트 wav 업로드)."""
+def _stt_via_svc(in_path: Path, language: Optional[str] = None) -> dict:
+    """whisper-stt 서비스로 전사(멀티파트 wav 업로드). language=None 이면 서비스 기본값."""
     with open(in_path, "rb") as f:
         r = httpx.post(f"{SVC_STT_URL}/transcribe",
-                       files={"audio": (in_path.name, f, "audio/wav")}, timeout=120.0)
+                       files={"audio": (in_path.name, f, "audio/wav")},
+                       data={"language": language or ""}, timeout=120.0)
     r.raise_for_status()
-    return (r.json().get("text") or "").strip()
+    data = r.json()
+    return {
+        "text": (data.get("text") or "").strip(),
+        "detected_language": data.get("detected_language") or data.get("language") or language or "auto",
+        "language_probability": data.get("language_probability", 0.0),
+        "stt_model_actual": data.get("model", ""),
+    }
 
 
-def _tts_via_svc(url: str, text: str, out: Path) -> float:
-    """piper-tts/csm-tts 서비스로 합성(JSON text→wav 바이트). 반환: 응답 음성 길이(초)."""
-    r = httpx.post(f"{url}/synthesize", json={"text": text or "..."}, timeout=600.0)
-    r.raise_for_status()
+def _tts_via_svc(url: str, text: str, out: Path, extra: Optional[dict] = None) -> float:
+    """piper-tts/csm-tts/melo-tts 서비스로 합성(JSON text→wav 바이트). 반환: 응답 음성 길이(초).
+
+    extra 로 서비스별 추가 파라미터(예: melo-tts 의 {"language": "KR"})를 합쳐 보낸다.
+    """
+    payload = {"text": text or "...", **(extra or {})}
+    r = httpx.post(f"{url}/synthesize", json=payload, timeout=600.0)
+    if r.status_code >= 400:
+        body = (r.text or "").strip()
+        if len(body) > 1200:
+            body = body[:1200] + "..."
+        raise RuntimeError(f"{url}/synthesize HTTP {r.status_code}: {body or r.reason_phrase}")
     out.write_bytes(r.content)
     with wave.open(str(out), "rb") as w:
         return w.getnframes() / float(w.getframerate() or 1)
 
 
-def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TTS"):
+def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TTS",
+              resolved: Optional[dict] = None):
     """한 대화 턴: STT → LLM(멀티턴) → TTS. _LIVE_LOCK 보유 상태에서만 호출.
 
     STT/TTS 는 콜러블로 주입한다 — 인프로세스(faster-whisper/Piper) 또는 BentoML 서비스 호출을
@@ -261,7 +329,13 @@ def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TT
 
     # 1) STT (인프로세스 또는 whisper-stt 서비스)
     t0 = time.perf_counter()
-    transcript = stt_fn(in_path)
+    stt_result = stt_fn(in_path)
+    if isinstance(stt_result, dict):
+        transcript = (stt_result.get("text") or "").strip()
+        stt_meta = {k: v for k, v in stt_result.items() if k != "text" and v not in (None, "")}
+    else:
+        transcript = str(stt_result or "").strip()
+        stt_meta = {}
     budget["stt_s"] = time.perf_counter() - t0
 
     if not transcript:
@@ -270,6 +344,7 @@ def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TT
             "input_audio_s": round(in_dur, 2), "output_audio_s": None,
             "note": "전사 결과가 비어 있습니다. 더 또렷하게 다시 말해 주세요.",
             "metrics": _label({"stt_ms": round(budget["stt_s"] * 1000)}),
+            "resolved": {**(resolved or {}), **stt_meta},
         }
 
     # 2) LLM (멀티턴 — 서버 history에 누적 후 system + history 전체 전달)
@@ -301,6 +376,7 @@ def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TT
                 "stt_ms": round(budget["stt_s"] * 1000),
                 "llm_total_ms": round(budget["llm_total_s"] * 1000),
             }),
+            "resolved": {**(resolved or {}), **stt_meta},
         }
     _LIVE_HISTORY.append({"role": "assistant", "content": answer})
 
@@ -334,6 +410,7 @@ def _run_turn(in_path: Path, stt_fn, llm_cfg: dict, tts_fn, tts_label: str = "TT
         "input_audio_s": round(in_dur, 2),
         "output_audio_s": round(out_dur, 2),
         "metrics": _label(raw),
+        "resolved": {**(resolved or {}), **stt_meta},
     }
 
 
@@ -371,36 +448,40 @@ def options():
                 "default": default, "help": help_, "impact": impact}
 
     controls = [
+        ctl("language", LANGUAGES, cfg.get("language", "auto"),
+            "대화 언어입니다 — 이 하나로 STT 인식 언어·LLM 응답 언어·기본 보이스가 함께 바뀝니다.",
+            "auto는 말한 언어를 자동 감지해 같은 언어로 답합니다. ko/ja/zh 등을 고르면 그 언어로 전사·응답하고, 아래 model/voice를 auto로 두면 그 언어에 맞는 다국어 STT 모델과 기본 보이스를 자동 사용합니다. 한국어 음성은 cascade(Piper 한국어 보이스) 또는 s2s+melo(MeloTTS) 경로가 필요합니다."),
         ctl("pipeline_mode", PIPELINE_MODES, "cascade",
             "음성 응답 파이프라인 방식입니다.",
             "cascade는 STT→LLM→TTS(Piper). s2s는 표현형 TTS(아래 backend)로 응답합니다. 어느 쪽이든 LLM은 Ollama입니다."),
         ctl("serving_mode", SERVING_MODES, "in_process",
             "모델을 어디서 실행할지 — 인프로세스 vs 상주 BentoML 서비스.",
-            "in_process는 STT/Piper를 이 프로세스에 캐싱(경량 모델엔 최속). served는 whisper-stt/piper-tts 서비스로 HTTP 호출(오버헤드로 더 느릴 수 있음 — 실측 비교용). s2s(csm)는 TTS가 항상 csm-tts 서비스이며, '모델 서비스' 카드에서 먼저 기동해야 합니다."),
+            "in_process는 STT/Piper를 이 프로세스에 캐싱(경량 모델엔 최속). served는 whisper-stt/piper-tts 서비스로 HTTP 호출(오버헤드로 더 느릴 수 있음 — 실측 비교용). s2s(csm/melo)는 TTS가 항상 상주 서비스이며, '모델 서비스' 카드에서 먼저 기동해야 합니다."),
         ctl("s2s_backend", S2S_BACKENDS, "csm",
-            "s2s 모드에서 쓸 표현형 TTS 모델입니다.",
-            "csm(Sesame)은 로드가 무거워 csm-tts 상주 서비스로 동작합니다. '모델 서비스' 카드에서 csm-tts를 기동하세요(외부 가중치 필요). cascade 모드에서는 무시됩니다. moshi(풀듀플렉스)는 'Moshi 라이브' 카드를 쓰세요."),
-        ctl("model", STT_MODELS, stt_cfg.get("model", "base.en"),
+            "s2s 모드에서 쓸 표현형/다국어 TTS 모델입니다.",
+            "csm(Sesame)은 영어 전용 표현형 TTS로 csm-tts 상주 서비스로 동작합니다. melo(MeloTTS)는 한국어 등 다국어 음성을 melo-tts 서비스로 합성합니다(언어는 위 language 따름). '모델 서비스' 카드에서 해당 서비스를 먼저 기동하세요. cascade 모드에서는 무시됩니다."),
+        ctl("model", ["auto", *STT_MODELS], "auto",
             "faster-whisper STT 모델 크기입니다.",
-            "큰 모델은 정확도가 좋아질 수 있지만 다운로드, 메모리, 전사 시간이 늘어납니다."),
+            "auto면 위 language에 맞는 모델을 자동 선택합니다. 큰 모델은 정확도가 좋아질 수 있지만 다운로드·메모리·전사 시간이 늘어납니다. .en은 영어 전용입니다."),
         ctl("compute_type", COMPUTE_TYPES, stt_cfg.get("compute_type", "int8"),
             "STT 모델 계산 정밀도/양자화 방식입니다.",
             "int8은 CPU에서 가볍고, float16/int8_float16은 CUDA 환경에 적합합니다."),
         ctl("device", DEVICES, stt_cfg.get("device", "auto"),
             "STT 실행 장치입니다.",
             "auto는 가능한 장치를 고르고, cpu/cuda는 명시적으로 고정합니다."),
-        ctl("voice", voices or [tts_cfg.get("voice", "en_US-lessac-medium")],
-            tts_cfg.get("voice", "en_US-lessac-medium"),
-            "응답 음성을 합성할 Piper 보이스입니다.",
-            "보이스마다 말투·발음·샘플레이트가 다릅니다. TTS 카드에서 받은 보이스만 보입니다."),
+        ctl("voice", ["auto", *(voices or [tts_cfg.get("voice", "en_US-lessac-medium")])],
+            "auto",
+            "응답 음성을 합성할 Piper 보이스입니다(cascade 모드).",
+            "auto면 위 language의 기본 보이스를 사용합니다. 보이스마다 말투·발음·샘플레이트가 다릅니다. TTS 카드에서 받은 보이스만 보입니다(한국어는 ko_KR-* 보이스를 먼저 받으세요)."),
         ctl("llm_model", llm_models or [llm_default], llm_default,
             "응답을 생성하는 LLM입니다(Ollama 설치 모델).",
             "큰 모델은 품질이 좋아질 수 있지만 응답이 느려집니다. reasoning 모델은 thinking 때문에 더 느릴 수 있습니다."),
         {  # 자유 텍스트 — 프런트는 type:"str"을 textarea로 렌더(전체 폭).
             "name": "system", "type": "str",
-            "default": llm_cfg.get("system", ""),
+            "default": "",
+            "placeholder": llm_cfg.get("system", ""),
             "help": "LLM의 역할·말투를 정하는 시스템 프롬프트입니다.",
-            "impact": "비우면 config 기본값을 사용합니다. 음성 응답이라 1-2문장으로 짧게 답하도록 두는 것이 좋습니다.",
+            "impact": "비우면 language에 맞는 시스템 프롬프트를 자동 사용합니다. 직접 입력한 값은 언어별 프롬프트보다 우선합니다.",
         },
     ]
     return {"controls": controls, "turns": len(_LIVE_HISTORY) // 2}
@@ -425,6 +506,7 @@ def turn(
     pipeline_mode: Optional[str] = Form(None),
     s2s_backend: Optional[str] = Form(None),
     serving_mode: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
 ):
     # 동기 def → FastAPI가 스레드풀에서 실행(블로킹 파이프라인이 이벤트 루프를 막지 않음).
     suffix = Path(audio.filename or "").suffix.lower()
@@ -448,14 +530,35 @@ def turn(
 
     mode = pipeline_mode or "cascade"        # cascade | s2s
     serving = serving_mode or "in_process"   # in_process | served
+    backend = s2s_backend or "csm"           # csm | melo (s2s 모드 전용)
+
+    # --- 언어 해석: 드롭다운 하나로 STT 언어·LLM 프롬프트·기본 보이스를 결정 ---
+    L = resolve_lang(cfg, language)
+    whisper_lang = L["whisper_lang"]         # None 이면 자동 감지
+
     if llm_model:  # UI에서 고른 LLM 모델로 그 턴만 override(base_url/think는 config 유지)
         llm_cfg = {**llm_cfg, "model": llm_model}
-    if system and system.strip():  # UI에서 편집한 시스템 프롬프트로 override(비우면 config 기본값)
+    # 시스템 프롬프트 우선순위: 사용자 입력 > 언어별(config languages) > config llm.system 기본값.
+    system_source = "config"
+    if system and system.strip():
         llm_cfg = {**llm_cfg, "system": system}
-    stt_model = model or stt_cfg.get("model", "base.en")
+        system_source = "user"
+    elif L["system"]:
+        llm_cfg = {**llm_cfg, "system": L["system"]}
+        system_source = f"language:{L['code']}"
+    elif L["code"] == "auto":
+        base = llm_cfg.get("system", "You are a concise, friendly senior software developer. Answer software and programming questions in 1-2 short sentences.")
+        llm_cfg = {**llm_cfg, "system": base + " Respond in the same language as the user."}
+        system_source = "auto_suffix"
+
+    # STT 모델: auto/빈 값이면 언어 기본값(없으면 config) → 비영어인데 .en 이면 다국어 모델로 승격.
+    stt_model = (None if model == "auto" else model) or L["stt_model"] or stt_cfg.get("model", "base.en")
+    if whisper_lang and whisper_lang != "en":
+        stt_model = _multilingual_model(stt_model)
     stt_compute = compute_type or stt_cfg.get("compute_type", "int8")
     stt_device = device or stt_cfg.get("device", "auto")
-    voice_name = voice or tts_cfg.get("voice", "en_US-lessac-medium")
+    # 보이스(cascade): auto/빈 값이면 언어 기본 보이스 → 없으면 config 기본.
+    voice_name = (None if voice == "auto" else voice) or L["voice"] or tts_cfg.get("voice", "en_US-lessac-medium")
     voice_dir = _live_voice_dir(tts_cfg)
 
     # 공통 사전 점검 — LLM(Ollama)
@@ -470,37 +573,72 @@ def turn(
             return JSONResponse(
                 {"error": "whisper-stt 서비스 미기동 — '모델 서비스' 카드에서 whisper-stt 를 기동하거나 serving_mode 를 in_process 로 두세요."},
                 status_code=503)
-        stt_fn = _stt_via_svc
+        stt_fn = lambda p: _stt_via_svc(p, whisper_lang)  # noqa: E731
     else:
-        stt_fn = lambda p: _stt_inproc(p, stt_model, stt_compute, stt_device)  # noqa: E731
+        stt_fn = lambda p: _stt_inproc(p, stt_model, stt_compute, stt_device, whisper_lang)  # noqa: E731
 
     # TTS 경로 선택
-    if mode == "s2s":
+    if mode == "s2s" and backend == "melo":
+        # melo(MeloTTS) — 다국어(한국어 포함). 항상 melo-tts 상주 서비스로 합성, language 전달.
+        if not _svc_up(SVC_MELO_URL):
+            return JSONResponse(
+                {"error": "melo-tts 서비스 미기동 — '모델 서비스' 카드에서 melo-tts 를 기동하세요(첫 기동 시 모델 다운로드/로딩)."},
+                status_code=503)
+        melo_lang = L["melo_lang"]
+        tts_fn = lambda text, out: _tts_via_svc(SVC_MELO_URL, text, out, {"language": melo_lang})  # noqa: E731
+        tts_label = "MeloTTS"
+        tts_backend = f"melo:{melo_lang}"
+    elif mode == "s2s":
         # csm 은 로드가 무거워 항상 csm-tts 상주 서비스로 합성(매 턴 재로드 회피 = 저지연의 핵심).
         if not _svc_up(SVC_CSM_URL):
             return JSONResponse(
-                {"error": "csm-tts 서비스 미기동 — '모델 서비스' 카드에서 csm-tts 를 기동하세요(외부 CSM 가중치 필요, 첫 기동 시 로딩에 수십 초)."},
+                {"error": "csm-tts 서비스 미기동 — '모델 서비스' 카드에서 csm-tts 를 기동하세요(외부 CSM 가중치 필요, 첫 기동 시 로딩에 수십 초). CSM은 영어 전용이라 한국어는 melo 백엔드를 쓰세요."},
                 status_code=503)
         tts_fn = lambda text, out: _tts_via_svc(SVC_CSM_URL, text, out)  # noqa: E731
         tts_label = "CSM"
+        tts_backend = "csm"
     elif serving == "served":
         if not _svc_up(SVC_TTS_URL):
             return JSONResponse(
                 {"error": "piper-tts 서비스 미기동 — '모델 서비스' 카드에서 piper-tts 를 기동하거나 serving_mode 를 in_process 로 두세요."},
                 status_code=503)
+        if voice_name != tts_cfg.get("voice", "en_US-lessac-medium"):
+            return JSONResponse(
+                {"error": f"piper-tts 서비스는 요청별 voice 전환을 지원하지 않습니다. '{voice_name}' 음성을 쓰려면 serving_mode=in_process 로 두거나, PIPER_VOICE={voice_name} 로 piper-tts 서비스를 따로 기동하세요."},
+                status_code=400)
         tts_fn = lambda text, out: _tts_via_svc(SVC_TTS_URL, text, out)  # noqa: E731
         tts_label = "TTS"
+        tts_backend = "piper-served"
     else:
         if not _voice_present(voice_dir, voice_name):
+            missing = [str(p) for p in (voice_dir / f"{voice_name}.onnx", voice_dir / f"{voice_name}.onnx.json") if not p.exists()]
             return JSONResponse(
-                {"error": f"Piper voice '{voice_name}' 없음 — TTS 카드에서 '보이스 다운로드'(--download)를 먼저 실행하세요."},
+                {"error": "Piper voice 준비 안 됨: "
+                          f"{voice_name}. 누락: {', '.join(missing)}. "
+                          f"실행: cd tts-gen && uv run python synthesize.py --download --voice {voice_name}"},
                 status_code=503)
         tts_fn = lambda text, out: _tts_to_wav(_get_voice(voice_dir, voice_name), text, out)  # noqa: E731
         tts_label = "TTS"
+        tts_backend = f"piper:{voice_name}"
+
+    resolved = {
+        "language": L["code"],
+        "whisper_lang": whisper_lang or "auto",
+        "stt_model": stt_model,
+        "stt_compute": stt_compute,
+        "stt_device": stt_device,
+        "voice": voice_name,
+        "melo_lang": L["melo_lang"],
+        "system_source": system_source,
+        "pipeline_mode": mode,
+        "serving_mode": serving,
+        "s2s_backend": backend if mode == "s2s" else "",
+        "tts_backend": tts_backend,
+    }
 
     # 턴은 한 번에 하나씩(모델/대화 history 충돌 방지 — 로컬 단일 사용자 가정)
     with _LIVE_LOCK:
         try:
-            return _run_turn(in_path, stt_fn, llm_cfg, tts_fn, tts_label)
+            return _run_turn(in_path, stt_fn, llm_cfg, tts_fn, tts_label, resolved)
         except Exception as e:
             return JSONResponse({"error": f"처리 실패: {type(e).__name__}: {e}"}, status_code=500)

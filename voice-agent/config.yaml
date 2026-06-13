@@ -1,5 +1,41 @@
 # 음성 에이전트 설정 (STT → LLM → TTS)
 
+# --- 언어 ---------------------------------------------------------------------
+# language: 전역 기본 언어. Live Voice 드롭다운/`--language`로 턴마다 덮어쓸 수 있다.
+#   auto = STT 자동감지 + "사용자와 같은 언어로 응답".
+# languages[<코드>]: 언어별 기본값. 새 언어 추가는 여기에 한 블록만 더하면 된다.
+#   stt_model   : 그 언어에 쓸 faster-whisper 모델(.en은 영어 전용 → 비영어는 다국어 모델).
+#   whisper_lang: STT 강제 언어 코드(빈값/auto면 자동감지).
+#   voice       : cascade(Piper) 기본 보이스. 비우면 TTS 카드에서 받은 보이스를 직접 골라야 함.
+#   melo_lang   : s2s+melo 백엔드에서 쓸 MeloTTS 언어(EN|KR|JP|ZH|ES|FR).
+#   system      : 그 언어용 시스템 프롬프트.
+language: "auto"
+languages:
+  ko:
+    stt_model: "small"
+    whisper_lang: "ko"
+    voice: "ko_KR-kss-medium"
+    melo_lang: "KR"
+    system: "당신은 간결하고 친근한 시니어 소프트웨어 개발자입니다. 반드시 한국어로만 1~2문장으로 짧게 답하세요. 영어 인사나 영어 문장을 섞지 마세요."
+  en:
+    stt_model: "base.en"
+    whisper_lang: "en"
+    voice: "en_US-lessac-medium"
+    melo_lang: "EN"
+    system: "You are a concise, friendly senior software developer. Answer software and programming questions in 1-2 short sentences."
+  ja:
+    stt_model: "small"
+    whisper_lang: "ja"
+    voice: ""
+    melo_lang: "JP"
+    system: "あなたは簡潔で親切なシニアソフトウェア開発者です。ソフトウェア・プログラミングの質問に日本語で1〜2文の短さで答えてください。"
+  zh:
+    stt_model: "small"
+    whisper_lang: "zh"
+    voice: ""
+    melo_lang: "ZH"
+    system: "你是简洁友好的资深软件开发者。请用1-2句中文回答软件和编程相关的问题。"
+
 stt:                                     # stt-gen (faster-whisper)
   model: "base.en"
   compute_type: "int8"

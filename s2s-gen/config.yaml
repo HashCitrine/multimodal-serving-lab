@@ -1,8 +1,35 @@
 # S2S(speech-to-speech) 설정 — 음성 네이티브 모델 vs 캐스케이드 비교
 
-backend: "cascade"     # cascade(STT→LLM→TTS 기준선) | csm(STT→LLM→CSM 표현형 TTS)
+backend: "cascade"     # cascade(STT→LLM→TTS 기준선) | csm(STT→LLM→CSM 표현형 TTS) | melo(STT→LLM→MeloTTS 다국어 TTS)
                        # moshi 는 full-duplex 라이브 전용 → lab-ui "Moshi" 카드/런처 사용(파일→파일 아님)
 device: "auto"         # auto(cuda→mps→cpu) | cpu | cuda | mps
+
+language: "auto"       # auto=STT 자동감지 + 사용자 언어로 응답 | ko | en | ja | zh
+languages:
+  ko:
+    stt_model: "small"
+    whisper_lang: "ko"
+    voice: "ko_KR-kss-medium"
+    melo_lang: "KR"
+    system: "당신은 간결하고 친근한 시니어 소프트웨어 개발자입니다. 반드시 한국어로만 1~2문장으로 짧게 답하세요. 영어 인사나 영어 문장을 섞지 마세요."
+  en:
+    stt_model: "base.en"
+    whisper_lang: "en"
+    voice: "en_US-lessac-medium"
+    melo_lang: "EN"
+    system: "You are a concise, friendly senior software developer. Answer software and programming questions in 1-2 short sentences."
+  ja:
+    stt_model: "small"
+    whisper_lang: "ja"
+    voice: ""
+    melo_lang: "JP"
+    system: "あなたは簡潔で親切なシニアソフトウェア開発者です。ソフトウェア・プログラミングの質問に日本語で1〜2文の短さで答えてください。"
+  zh:
+    stt_model: "small"
+    whisper_lang: "zh"
+    voice: ""
+    melo_lang: "ZH"
+    system: "你是简洁友好的资深软件开发者。请用1-2句中文回答软件和编程相关的问题。"
 
 # --- cascade 기준선 (앞선 voice-agent 자산 재사용) ---------------------------
 stt:                                     # stt-gen (faster-whisper)
@@ -13,8 +40,9 @@ stt:                                     # stt-gen (faster-whisper)
 llm:                                     # llm-serve provider (OpenAI 호환)
   base_url: "http://localhost:11434/v1"  # 로컬 Ollama / 클라우드면 vLLM base_url
   api_key: "ollama"
-  model: "llama3.2:1b-instruct-q4_K_M"
+  model: "gemma4:12b-mlx"
   system: "You are a concise, friendly tutor. Answer in 1-2 short sentences."
+  think: false
   max_tokens: 80
 
 tts:                                     # tts-gen (Piper) — 입력 음성 합성·캐스케이드 출력에 사용
@@ -32,6 +60,15 @@ csm_max_audio_ms: 20000
 #   기동: CSM_DIR=../_external/csm uv run --extra csm bentoml serve bento_service:CSMTTS --port 3003
 #   (lab-ui "모델 서비스" 카드로도 기동 가능)
 csm_service_url: "http://127.0.0.1:3003"
+
+# --- melo (MeloTTS, 다국어 TTS 캐스케이드) ----------------------------------
+# 준비/기동은 lab-ui가 `uv run --with melotts@git...`로 격리 실행한다.
+# 수동 기동: uv run --with "melotts @ git+https://github.com/myshell-ai/MeloTTS.git" --with unidic-lite --with python-mecab-ko --with bentoml bentoml serve bento_service:MeloTTS --port 3004
+melo_service_url: "http://127.0.0.1:3004"
+melo_device: "auto"
+melo_default_language: "EN"
+melo_speaker: ""       # 빈값이면 언어 기본 speaker(KR/JP/ZH/ES/FR, EN-Default)
+melo_speed: 1.0
 
 # --- moshi (Kyutai, full-duplex 라이브 전용) --------------------------------
 # moshi 는 파일→파일 오프라인 API가 없어 여기 backend 로는 실행하지 않는다.

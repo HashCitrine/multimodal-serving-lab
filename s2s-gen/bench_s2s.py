@@ -6,7 +6,8 @@
 
 사용:
     python bench_s2s.py --backend cascade
-    python bench_s2s.py --backend moshi --device cuda
+    python bench_s2s.py --backend csm
+    python bench_s2s.py --backend melo --language ko
 """
 from __future__ import annotations
 
@@ -44,7 +45,8 @@ def synth(cfg, voice, sc, text, path):
 
 def main():
     ap = argparse.ArgumentParser(description="S2S 지연 벤치")
-    ap.add_argument("--backend", choices=["cascade", "csm"])
+    ap.add_argument("--backend", choices=["cascade", "csm", "melo"])
+    ap.add_argument("--language", help="대화 언어(auto|ko|en|ja|zh)")
     ap.add_argument("--device")
     ap.add_argument("-c", "--config", default="config.yaml")
     args = ap.parse_args()
@@ -52,6 +54,8 @@ def main():
     cfg = yaml.safe_load(open(SCRIPT_DIR / args.config, "r", encoding="utf-8"))
     if args.backend:
         cfg["backend"] = args.backend
+    if args.language:
+        cfg["language"] = args.language
     if args.device:
         cfg["device"] = args.device
 
@@ -65,7 +69,10 @@ def main():
     # 질문 음성 미리 합성 (Piper)
     from piper import PiperVoice, SynthesisConfig
     tts = cfg.get("tts", {})
-    voice = PiperVoice.load(str(resolve(tts.get("voice_dir", "../tts-gen/models")) / f"{tts.get('voice', 'en_US-lessac-medium')}.onnx"))
+    lang = cfg.get("language", "auto")
+    entry = (cfg.get("languages", {}) or {}).get(lang, {}) if lang != "auto" else {}
+    voice_name = entry.get("voice") or tts.get("voice", "en_US-lessac-medium")
+    voice = PiperVoice.load(str(resolve(tts.get("voice_dir", "../tts-gen/models")) / f"{voice_name}.onnx"))
     sc = SynthesisConfig()
     out_dir = (SCRIPT_DIR / "outputs"); out_dir.mkdir(exist_ok=True)
 

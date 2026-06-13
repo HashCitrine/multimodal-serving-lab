@@ -36,9 +36,23 @@ def resolve(rel: str) -> Path:
     return p if p.is_absolute() else (SCRIPT_DIR / p)
 
 
-def piper_voice(cfg, use_cuda=False):
+def resolve_lang(cfg: dict, lang) -> dict:
+    """언어 코드 → {whisper_lang, stt_model, voice, system}. lab-ui/live_voice.resolve_lang 와 동일 규칙."""
+    code = (lang or cfg.get("language") or "auto").strip()
+    entry = (cfg.get("languages", {}) or {}).get(code, {}) if code != "auto" else {}
+    return {
+        "code": code,
+        "whisper_lang": None if code == "auto" else (entry.get("whisper_lang") or code),
+        "stt_model": entry.get("stt_model") or "",
+        "voice": entry.get("voice") or "",
+        "system": entry.get("system") or "",
+    }
+
+
+def piper_voice(cfg, use_cuda=False, voice=None):
     from piper import PiperVoice
-    return PiperVoice.load(str(resolve(cfg["tts"]["voice_dir"]) / f"{cfg['tts']['voice']}.onnx"),
+    name = voice or cfg["tts"]["voice"]
+    return PiperVoice.load(str(resolve(cfg["tts"]["voice_dir"]) / f"{name}.onnx"),
                            use_cuda=use_cuda)
 
 
@@ -55,6 +69,7 @@ def main():
     ap = argparse.ArgumentParser(description="STT→LLM→TTS 음성 에이전트")
     ap.add_argument("--ask", help="질문 텍스트(Piper로 음성 합성해 입력으로 사용)")
     ap.add_argument("--audio", help="질문 음성 wav 직접 입력")
+    ap.add_argument("--language", help="대화 언어(auto|ko|en|ja|zh). STT 언어·응답 언어·기본 보이스를 함께 결정")
     ap.add_argument("-c", "--config", default="config.yaml")
     args = ap.parse_args()
     if not args.ask and not args.audio:
@@ -62,7 +77,9 @@ def main():
 
     cfg = load_config(args.config)
     out_dir = (SCRIPT_DIR / "outputs"); out_dir.mkdir(exist_ok=True)
-    voice = piper_voice(cfg)
+    L = resolve_lang(cfg, args.language)
+    voice_name = L["voice"] or cfg["tts"]["voice"]
+    voice = piper_voice(cfg, voice=voice_name)
 
     # 0) 입력 음성 준비 (마이크 대체)
     if args.audio:
@@ -76,12 +93,16 @@ def main():
     budget = {}
 
     # 1) STT
+    stt_model = L["stt_model"] or cfg["stt"]["model"]
+    whisper_lang = L["whisper_lang"]
+    if whisper_lang and whisper_lang != "en" and stt_model.endswith(".en"):
+        stt_model = stt_model[:-3]  # 영어 전용 모델을 다국어 변형으로 승격
     from faster_whisper import WhisperModel
-    stt = WhisperModel(cfg["stt"]["model"], device=cfg["stt"].get("device", "auto"),
+    stt = WhisperModel(stt_model, device=cfg["stt"].get("device", "auto"),
                        compute_type=cfg["stt"].get("compute_type", "int8"))
-    list(stt.transcribe(in_wav, beam_size=1)[0])  # warmup
+    list(stt.transcribe(in_wav, beam_size=1, language=whisper_lang)[0])  # warmup
     t0 = time.perf_counter()
-    segs, _ = stt.transcribe(in_wav, beam_size=1)
+    segs, _ = stt.transcribe(in_wav, beam_size=1, language=whisper_lang)
     question = "".join(s.text for s in segs).strip()
     budget["stt_s"] = time.perf_counter() - t0
 
@@ -89,7 +110,9 @@ def main():
     from openai import OpenAI
     prov = cfg["llm"]
     client = OpenAI(base_url=prov["base_url"], api_key=prov.get("api_key", "EMPTY"))
-    sys_prompt = cfg["llm"].get("system", "You are a concise, friendly English tutor. Answer in 1-2 sentences.")
+    sys_prompt = L["system"] or cfg["llm"].get("system", "You are a concise, friendly English tutor. Answer in 1-2 sentences.")
+    if L["code"] == "auto" and not L["system"]:
+        sys_prompt += " Respond in the same language as the user."
     # 워밍업: 모델을 메모리에 올려 '대화 중 정상상태' 지연을 측정(첫 턴 콜드스타트 제외)
     client.chat.completions.create(model=prov["model"],
         messages=[{"role": "user", "content": "hi"}], max_tokens=1, temperature=0)

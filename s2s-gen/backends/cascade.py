@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import shutil
 import time
+import json
+import urllib.request
 import wave
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +21,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from .base import S2SBackend
+from runtime_checks import missing_piper_voice_files, piper_voice_config_issue
 
 
 class CascadeBackend(S2SBackend):
@@ -30,6 +33,19 @@ class CascadeBackend(S2SBackend):
         self._stt = None
         self._voice = None
         self._client = None
+        self._lang = self._resolve_lang(cfg.get("language"))
+
+    def _resolve_lang(self, lang: Optional[str]) -> dict:
+        code = (lang or self.cfg.get("language") or "auto").strip()
+        table = self.cfg.get("languages", {}) or {}
+        entry = table.get(code, {}) if code != "auto" else {}
+        return {
+            "code": code,
+            "whisper_lang": None if code == "auto" else (entry.get("whisper_lang") or code),
+            "stt_model": entry.get("stt_model") or "",
+            "voice": entry.get("voice") or "",
+            "system": entry.get("system") or "",
+        }
 
     # --- 점검 -------------------------------------------------------------
     def available(self) -> bool:
@@ -45,9 +61,21 @@ class CascadeBackend(S2SBackend):
 
     def _tts_diagnostics(self) -> list[str]:
         """TTS 단계 준비 점검. cascade 는 Piper 보이스, csm 은 torch/CSM_DIR/HF 토큰으로 override."""
-        voice = self._voice_path()
-        if not voice.exists():
-            return [f"Piper voice not found: {voice} (tts-gen 보이스 준비 필요)"]
+        voice_name = self._voice_name()
+        missing = missing_piper_voice_files(
+            self.cfg.get("tts", {}).get("voice_dir", "../tts-gen/models"),
+            voice_name,
+            self.base_dir,
+        )
+        if missing:
+            return [f"Piper voice files missing for {voice_name}: {', '.join(str(p) for p in missing)}"]
+        issue = piper_voice_config_issue(
+            self.cfg.get("tts", {}).get("voice_dir", "../tts-gen/models"),
+            voice_name,
+            self.base_dir,
+        )
+        if issue:
+            return [issue]
         return []
 
     # --- 리소스 -----------------------------------------------------------
@@ -56,8 +84,11 @@ class CascadeBackend(S2SBackend):
         return p if p.is_absolute() else (self.base_dir / p).resolve()
 
     def _voice_path(self) -> Path:
+        return self._resolve(self.cfg.get("tts", {}).get("voice_dir", "../tts-gen/models")) / f"{self._voice_name()}.onnx"
+
+    def _voice_name(self) -> str:
         tts = self.cfg.get("tts", {})
-        return self._resolve(tts.get("voice_dir", "../tts-gen/models")) / f"{tts.get('voice', 'en_US-lessac-medium')}.onnx"
+        return self._lang.get("voice") or tts.get("voice", "en_US-lessac-medium")
 
     def _get_voice(self):
         if self._voice is None:
@@ -69,7 +100,10 @@ class CascadeBackend(S2SBackend):
         if self._stt is None:
             from faster_whisper import WhisperModel
             stt = self.cfg.get("stt", {})
-            self._stt = WhisperModel(stt.get("model", "base.en"),
+            model = self._lang.get("stt_model") or stt.get("model", "base.en")
+            if self._lang.get("whisper_lang") and self._lang["whisper_lang"] != "en" and model.endswith(".en"):
+                model = model[:-3]
+            self._stt = WhisperModel(model,
                                      device=stt.get("device", "auto"),
                                      compute_type=stt.get("compute_type", "int8"))
         return self._stt
@@ -81,6 +115,52 @@ class CascadeBackend(S2SBackend):
             self._client = OpenAI(base_url=prov.get("base_url", "http://localhost:11434/v1"),
                                   api_key=prov.get("api_key", "EMPTY"))
         return self._client
+
+    def _chat_stream(self, prov: dict, messages: list[dict]) -> tuple[str, float, float]:
+        base = prov.get("base_url", "http://localhost:11434/v1")
+        native = (base[:-3] if base.rstrip("/").endswith("/v1") else base).rstrip("/")
+        if native.startswith("http://localhost:11434") or native.startswith("http://127.0.0.1:11434"):
+            body = {
+                "model": prov.get("model", "llama3.2:1b-instruct-q4_K_M"),
+                "messages": messages,
+                "stream": True,
+                "think": bool(prov.get("think", False)),
+                "options": {"temperature": 0.5, "num_predict": prov.get("max_tokens", 80)},
+            }
+            req = urllib.request.Request(
+                native + "/api/chat",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            t0 = time.perf_counter()
+            ttft = None
+            answer = ""
+            with urllib.request.urlopen(req, timeout=120) as r:
+                for raw in r:
+                    if not raw.strip():
+                        continue
+                    c = json.loads(raw).get("message", {}).get("content", "")
+                    if c:
+                        if ttft is None:
+                            ttft = time.perf_counter() - t0
+                        answer += c
+            return answer.strip(), ttft or 0.0, time.perf_counter() - t0
+
+        client = self._get_client()
+        t0 = time.perf_counter()
+        ttft = None
+        answer = ""
+        stream = client.chat.completions.create(
+            model=prov.get("model", "llama3.2:1b-instruct-q4_K_M"),
+            messages=messages,
+            stream=True, temperature=0.5, max_tokens=prov.get("max_tokens", 80))
+        for ch in stream:
+            d = ch.choices[0].delta.content
+            if d:
+                if ttft is None:
+                    ttft = time.perf_counter() - t0
+                answer += d
+        return answer.strip(), ttft or 0.0, time.perf_counter() - t0
 
     def _synthesize(self, text: str, out: Path) -> float:
         """응답 텍스트 → 음성 wav. 반환: 응답 음성 길이(초). 하위 클래스(csm)가 override."""
@@ -101,30 +181,29 @@ class CascadeBackend(S2SBackend):
             detail = "\n".join(f"- {i}" for i in self.diagnostics())
             raise RuntimeError(f"cascade backend not ready:\n{detail}")
         prov = self.cfg.get("llm", {})
-        sys_prompt = prov.get("system", "You are a concise, friendly tutor. Answer in 1-2 short sentences.")
+        sys_prompt = self._lang.get("system") or prov.get("system", "You are a concise, friendly tutor. Answer in 1-2 short sentences.")
+        if self._lang.get("code") == "auto" and not self._lang.get("system"):
+            sys_prompt += " Respond in the same language as the user."
 
         # 1) STT
         stt = self._get_stt()
         t0 = time.perf_counter()
-        segs, _ = stt.transcribe(in_wav, beam_size=1)
+        segs, info = stt.transcribe(
+            in_wav,
+            beam_size=1,
+            language=self._lang.get("whisper_lang"),
+            task="transcribe",
+            condition_on_previous_text=False,
+        )
         question = "".join(s.text for s in segs).strip()
         stt_s = time.perf_counter() - t0
 
         # 2) LLM (스트리밍, TTFT 측정)
-        client = self._get_client()
-        t0 = time.perf_counter(); ttft = None; answer = ""
-        stream = client.chat.completions.create(
-            model=prov.get("model", "llama3.2:1b-instruct-q4_K_M"),
-            messages=[{"role": "system", "content": sys_prompt},
-                      {"role": "user", "content": question}],
-            stream=True, temperature=0.5, max_tokens=prov.get("max_tokens", 80))
-        for ch in stream:
-            d = ch.choices[0].delta.content
-            if d:
-                if ttft is None:
-                    ttft = time.perf_counter() - t0
-                answer += d
-        llm_s = time.perf_counter() - t0
+        answer, ttft, llm_s = self._chat_stream(
+            prov,
+            [{"role": "system", "content": sys_prompt},
+             {"role": "user", "content": question}],
+        )
 
         # 3) TTS (cascade=Piper, csm=CSM — _synthesize 가 교체점)
         t0 = time.perf_counter()
@@ -136,6 +215,8 @@ class CascadeBackend(S2SBackend):
             "backend": self.name,
             "text": answer.strip(),
             "question": question,
+            "detected_language": getattr(info, "language", None) or self._lang.get("whisper_lang") or "auto",
+            "language_probability": round(float(getattr(info, "language_probability", 0.0) or 0.0), 4),
             "stt_s": stt_s,
             "llm_ttft_s": ttft or 0.0,
             "llm_s": llm_s,

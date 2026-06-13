@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import urllib.request
 import time
 import wave
 from datetime import datetime
@@ -19,6 +21,12 @@ import numpy as np
 import yaml
 
 SCRIPT_DIR = Path(__file__).parent
+
+PIPER_KO_VOICE = "ko_KR-kss-medium"
+PIPER_KO_FILES = {
+    ".onnx": "https://huggingface.co/neurlang/piper-onnx-kss-korean/resolve/main/piper-kss-korean.onnx?download=true",
+    ".onnx.json": "https://huggingface.co/neurlang/piper-onnx-kss-korean/raw/main/piper-kss-korean.onnx.json",
+}
 
 
 def load_config(path: str) -> dict:
@@ -35,14 +43,43 @@ def resolve_dir(rel: str) -> Path:
 
 
 def download_voice(cfg: dict) -> None:
-    from piper.download_voices import download_voice as _dl
-
     name = cfg["voice"]["name"]
     model_dir = resolve_dir(cfg["voice"]["model_dir"])
     model_dir.mkdir(parents=True, exist_ok=True)
+    if name == PIPER_KO_VOICE:
+        print(f"[*] 한국어 커뮤니티 보이스 다운로드: {name} → {model_dir}")
+        print("[!] 라이선스: neurlang/piper-onnx-kss-korean 은 cc-by-nc-sa-4.0 입니다.")
+        for suffix, url in PIPER_KO_FILES.items():
+            dst = model_dir / f"{name}{suffix}"
+            print(f"    - {dst.name}")
+            urllib.request.urlretrieve(url, dst)
+        _require_voice_files(model_dir, name)
+        print("[+] 완료")
+        return
+
+    from piper.download_voices import download_voice as _dl
+
     print(f"[*] 보이스 다운로드: {name} → {model_dir}")
     _dl(name, model_dir)
+    _require_voice_files(model_dir, name)
     print("[+] 완료")
+
+
+def _require_voice_files(model_dir: Path, name: str) -> None:
+    missing = [model_dir / f"{name}{suffix}" for suffix in (".onnx", ".onnx.json")
+               if not (model_dir / f"{name}{suffix}").exists()]
+    if missing:
+        raise FileNotFoundError("Piper 보이스 파일 누락:\n" + "\n".join(f"  - {p}" for p in missing))
+    cfg_path = model_dir / f"{name}.onnx.json"
+    try:
+        phoneme_type = (json.loads(cfg_path.read_text(encoding="utf-8")).get("phoneme_type") or "espeak").lower()
+    except Exception:
+        phoneme_type = ""
+    if phoneme_type not in ("espeak", "text"):
+        raise ValueError(
+            f"Piper 보이스 설정이 현재 piper 패키지와 호환되지 않습니다: {cfg_path} "
+            f"(phoneme_type={phoneme_type!r}). 이 보이스는 s2s melo 경로에서 쓰지 않습니다."
+        )
 
 
 def load_voice(cfg: dict, use_cuda: bool):
@@ -50,10 +87,13 @@ def load_voice(cfg: dict, use_cuda: bool):
 
     name = cfg["voice"]["name"]
     model_path = resolve_dir(cfg["voice"]["model_dir"]) / f"{name}.onnx"
-    if not model_path.exists():
+    try:
+        _require_voice_files(resolve_dir(cfg["voice"]["model_dir"]), name)
+    except FileNotFoundError as e:
         raise FileNotFoundError(
-            f"보이스 모델 없음: {model_path}\n먼저 `python synthesize.py --download`"
-        )
+            f"{e}\n먼저 `python synthesize.py --download`"
+            f"{' --voice ko_KR-kss-medium' if name == PIPER_KO_VOICE else ''}"
+        ) from e
     print(f"[*] 모델 로딩: {name}  (cuda={use_cuda})")
     return PiperVoice.load(str(model_path), use_cuda=use_cuda)
 

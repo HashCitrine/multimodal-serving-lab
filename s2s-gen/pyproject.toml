@@ -2,7 +2,7 @@
 name = "s2s-gen"
 version = "0.1.0"
 description = "speech-to-speech(음성 네이티브) 모델 vs STT→LLM→TTS 캐스케이드 지연 비교"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
 # cascade 기준선 의존성만 기본 포함(어디서나 가볍게 동작).
 dependencies = [
     "faster-whisper>=1.0",  # cascade STT
@@ -29,6 +29,5 @@ csm = [
     "torchao==0.9.0",
     "silentcipher @ git+https://github.com/SesameAILabs/silentcipher@master",
 ]
-
 [tool.uv]
 package = false
